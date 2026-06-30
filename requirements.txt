@@ -1,0 +1,22 @@
+# ConfocalOrchestrator dependencies
+# Note: this is a planning placeholder for Stage 1.
+# Uncomment / pip install packages as each part of the pipeline is actually built.
+
+# --- Acquisition ---
+# PyYAML
+# tifffile
+# aicsimageio
+# fastapi
+# uvicorn
+
+# --- Image Processing & Analysis ---
+# opencv-python
+# scikit-image
+# cellpose
+# trackpy
+# pandas
+# numpy
+# matplotlib
+
+# --- Dev / Testing ---
+# pytest
