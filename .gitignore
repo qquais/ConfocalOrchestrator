@@ -33,6 +33,8 @@ Thumbs.db
 *.tiff
 *.tif
 *.ome.tiff
+*.nd2
+*.png
 data/
 output/
 *.csv

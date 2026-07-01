@@ -1,21 +1,24 @@
 # ConfocalOrchestrator dependencies
-# Note: this is a planning placeholder for Stage 1.
 # Uncomment / pip install packages as each part of the pipeline is actually built.
 
-# --- Acquisition ---
+# --- ND2 file reading (active) ---
+nd2
+numpy
+Pillow
+
+# --- Acquisition (future) ---
 # PyYAML
 # tifffile
 # aicsimageio
 # fastapi
 # uvicorn
 
-# --- Image Processing & Analysis ---
+# --- Image Processing & Analysis (future) ---
 # opencv-python
 # scikit-image
 # cellpose
 # trackpy
 # pandas
-# numpy
 # matplotlib
 
 # --- Dev / Testing ---
