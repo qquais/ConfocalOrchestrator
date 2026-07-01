@@ -1,0 +1,25 @@
+# ConfocalOrchestrator dependencies
+# Uncomment / pip install packages as each part of the pipeline is actually built.
+
+# --- ND2 file reading (active) ---
+nd2
+numpy
+Pillow
+
+# --- Acquisition (future) ---
+# PyYAML
+# tifffile
+# aicsimageio
+# fastapi
+# uvicorn
+
+# --- Image Processing & Analysis (future) ---
+# opencv-python
+# scikit-image
+# cellpose
+# trackpy
+# pandas
+# matplotlib
+
+# --- Dev / Testing ---
+# pytest
