@@ -1,0 +1,51 @@
+# ConfocalOrchestrator - Example Acquisition Protocol
+# This file defines the parameters for an automated imaging run
+# on the Nikon AX confocal microscope with N-SPARC detector.
+
+protocol:
+  name: "physarum_timelapse_example"
+  description: "Example time-lapse protocol for Physarum polycephalum nuclear tracking"
+  created_by: "Qurratul Ain Quais"
+  version: "0.1"
+
+# --- MICROSCOPE OBJECTIVE ---
+objective:
+  magnification: 10        # 4x, 10x, or 60x available
+  name: "Plan APO 10x"
+
+# --- STAGE POSITIONS ---
+# Multiple positions can be defined for multi-site imaging
+positions:
+  - id: 1
+    label: "sample_center"
+    x: 0.0                 # in microns
+    y: 0.0
+    z: 0.0
+
+# --- Z-STACK SETTINGS ---
+z_stack:
+  enabled: true
+  z_start: -5.0            # microns relative to focus
+  z_end: 5.0
+  z_step: 1.0              # step size in microns
+
+# --- CHANNELS ---
+# Determined before imaging based on dye or fluorescent protein used
+channels:
+  - id: 0
+    name: "DAPI"           # example fluorescent dye for nuclei
+    laser_wavelength: 405  # in nm
+    laser_power: 5.0       # percentage
+    exposure_ms: 100       # milliseconds
+
+# --- TIME-LAPSE SETTINGS ---
+timelapse:
+  interval_minutes: 10     # time between each acquisition cycle
+  duration_hours: 24       # total run duration (up to 96 hrs / 4 days)
+  total_timepoints: 144    # auto calculated: duration*60 / interval
+
+# --- OUTPUT SETTINGS ---
+output:
+  save_directory: "D:/ExperimentData/"   # 8TB data drive on microscope PC
+  filename_prefix: "physarum_run01"
+  format: "nd2"                          # native NIS-Elements format
