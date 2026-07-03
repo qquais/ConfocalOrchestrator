@@ -2,12 +2,17 @@
 # ------------------------------------------------------------
 # Full end-to-end Cellects pipeline on 25-frame Physarum time-lapse.
 #
-# What this does:
-#   1. Loads all 25 TIFF frames in order
-#   2. Segments each frame using Cellects (finds organism vs. background)
-#   3. Measures organism area (pixel count) at each timepoint
-#   4. Saves results to growth_over_time.csv
-#   5. Plots and saves a growth curve (area vs. time)
+# Option A: reads TIFF frames directly — no intermediate PNG step
+# Option B: computes 7 shape metrics per frame, not just area
+#
+# Metrics saved per frame:
+#   area          — organism size in pixels
+#   perimeter     — border length in pixels
+#   circularity   — 1.0 = perfect circle, lower = more irregular/branched
+#   eccentricity  — 0 = circle, 1 = line (how elongated the organism is)
+#   major_axis    — length of longest axis through the organism (pixels)
+#   minor_axis    — length of shortest axis (pixels)
+#   solidity      — area / convex_hull_area (1.0 = no holes/indentations)
 #
 # Run: python3 analysis/cellects_pipeline.py
 # ------------------------------------------------------------
@@ -18,6 +23,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from cellects.image.one_image_analysis import OneImageAnalysis
+from cellects.image.shape_descriptors import ShapeDescriptors
+
+WANTED_METRICS = ["area", "perimeter", "circularity",
+                  "eccentricity", "major_axis_len", "minor_axis_len", "solidity"]
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR   = Path("data/physarum_sample/single_experiment")
@@ -25,79 +34,87 @@ OUTPUT_DIR = Path("data/physarum_sample")
 CSV_OUT    = OUTPUT_DIR / "growth_over_time.csv"
 PLOT_OUT   = OUTPUT_DIR / "growth_curve.png"
 
-# ── 1. Load frames in correct numerical order (1, 2, 3 … 25) ─────────────────
-# A plain alphabetical sort gives 1, 10, 11 … which is wrong.
-# We sort by the integer in the filename instead.
-tif_files = sorted(DATA_DIR.glob("image*.tif"),
-                   key=lambda p: int(p.stem.replace("image", "")))
+# ── 1. Load frames in correct numerical order ─────────────────────────────────
+# Supports both .tif  (image1.tif  … from Cellects sample data)
+#          and .png  (img001.png … from extract_frames.py)
+# Sorted by the trailing number in the filename so order is always 1, 2, 3 …
+import re
 
-print(f"Found {len(tif_files)} frames in {DATA_DIR}")
+def _frame_number(path):
+    match = re.search(r"(\d+)", path.stem)
+    return int(match.group(1)) if match else 0
 
-# ── 2. Build the colour-space dict Cellects needs ─────────────────────────────
-# Plain Python dict — Cellects' split_dict() handles conversion to numba types internally.
-# "bgr": [1,1,1] means "use all three BGR channels combined" (grayscale-like).
+tif_files = sorted(
+    list(DATA_DIR.glob("*.tif")) + list(DATA_DIR.glob("*.png")),
+    key=_frame_number
+)
+print(f"Found {len(tif_files)} frames in {DATA_DIR}\n")
+
+# ── 2. Colour-space dict for Cellects segmentation ───────────────────────────
 csc_dict = {"bgr": np.array([1, 1, 1], dtype=np.int8)}
 
-# ── 3. Segment every frame and record the organism area ───────────────────────
-records = []   # will hold one dict per frame
+# ── 3. Segment every frame and compute shape metrics ─────────────────────────
+records = []
 
 for frame_idx, tif_path in enumerate(tif_files, start=1):
 
-    # Load image as BGR (OpenCV default — Cellects expects BGR, not RGB)
     img = cv2.imread(str(tif_path))
     if img is None:
         print(f"  WARNING: could not read {tif_path.name}, skipping")
         continue
 
-    # Run Cellects segmentation
-    # color_number=2 means split the image into 2 groups: organism vs. background
+    # Cellects segmentation → binary_image (0=background, 1=organism)
     analysis = OneImageAnalysis(img, shape_number=1)
     analysis.convert_and_segment(c_space_dict=csc_dict, color_number=2)
+    mask = analysis.binary_image   # dtype uint8, values 0 or 1
 
-    # binary_image: 0 = background, 1 = organism
-    # Summing it gives the total number of organism pixels = area
-    organism_area = int(analysis.binary_image.sum())
+    # ShapeDescriptors computes all metrics from the binary mask in one call
+    sd = ShapeDescriptors(mask, WANTED_METRICS)
 
-    records.append({
-        "frame":                frame_idx,
-        "timepoint":            frame_idx,        # rename if you have real timestamps
-        "organism_area_pixels": organism_area,
-    })
+    row = {
+        "frame":          frame_idx,
+        "timepoint":      frame_idx,
+        "area_px":        int(sd.descriptors.get("area", mask.sum())),
+        "perimeter_px":   round(float(sd.descriptors.get("perimeter", 0)), 2),
+        "circularity":    round(float(sd.descriptors.get("circularity", 0)), 4),
+        "eccentricity":   round(float(sd.descriptors.get("eccentricity", 0)), 4),
+        "major_axis_px":  round(float(sd.descriptors.get("major_axis_len", 0)), 2),
+        "minor_axis_px":  round(float(sd.descriptors.get("minor_axis_len", 0)), 2),
+        "solidity":       round(float(sd.descriptors.get("solidity", 0)), 4),
+    }
+    records.append(row)
 
-    print(f"  Frame {frame_idx:02d}/{len(tif_files)}  |  area = {organism_area:,} px")
+    print(f"  Frame {frame_idx:02d}/{len(tif_files)}  "
+          f"area={row['area_px']:,}px  "
+          f"circ={row['circularity']:.3f}  "
+          f"eccen={row['eccentricity']:.3f}")
 
 # ── 4. Save CSV ───────────────────────────────────────────────────────────────
 df = pd.DataFrame(records)
 df.to_csv(CSV_OUT, index=False)
-print(f"\nCSV saved: {CSV_OUT}")
+print(f"\nCSV saved → {CSV_OUT}")
 print(df.to_string(index=False))
 
-# ── 5. Plot growth curve ──────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(10, 5))
+# ── 5. Plot: 3-panel growth figure ───────────────────────────────────────────
+fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+fig.suptitle("Physarum polycephalum — Shape Metrics Over Time", fontsize=14)
 
-ax.plot(df["timepoint"], df["organism_area_pixels"],
-        marker="o", linewidth=2, color="steelblue", markersize=5)
+panels = [
+    ("area_px",      "Area (pixels)",    "steelblue"),
+    ("circularity",  "Circularity",      "darkorange"),
+    ("eccentricity", "Eccentricity",     "mediumseagreen"),
+]
 
-ax.fill_between(df["timepoint"], df["organism_area_pixels"],
-                alpha=0.15, color="steelblue")   # shaded area under the curve
+for ax, (col, ylabel, color) in zip(axes, panels):
+    ax.plot(df["timepoint"], df[col],
+            marker="o", linewidth=2, color=color, markersize=4)
+    ax.fill_between(df["timepoint"], df[col], alpha=0.12, color=color)
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.grid(True, linestyle="--", alpha=0.4)
 
-ax.set_xlabel("Timepoint (frame number)", fontsize=12)
-ax.set_ylabel("Organism area (pixels)", fontsize=12)
-ax.set_title("Physarum polycephalum — Growth Over Time\n(Cellects segmentation)", fontsize=13)
-ax.grid(True, linestyle="--", alpha=0.5)
-
-# Annotate min and max area points
-min_row = df.loc[df["organism_area_pixels"].idxmin()]
-max_row = df.loc[df["organism_area_pixels"].idxmax()]
-ax.annotate(f"min: {int(min_row.organism_area_pixels):,} px",
-            xy=(min_row.timepoint, min_row.organism_area_pixels),
-            xytext=(5, 15), textcoords="offset points", fontsize=9, color="red")
-ax.annotate(f"max: {int(max_row.organism_area_pixels):,} px",
-            xy=(max_row.timepoint, max_row.organism_area_pixels),
-            xytext=(5, -20), textcoords="offset points", fontsize=9, color="green")
-
+axes[-1].set_xlabel("Timepoint (frame number)", fontsize=11)
 plt.tight_layout()
 plt.savefig(PLOT_OUT, dpi=150)
 plt.close()
-print(f"Plot saved: {PLOT_OUT}")
-print("\nDone! Open growth_curve.png to see the growth dynamics.")
+print(f"Plot saved  → {PLOT_OUT}")
+print("\nDone!")
