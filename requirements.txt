@@ -6,6 +6,9 @@ nd2
 numpy
 Pillow
 
+# --- Segmentation (active) ---
+cellpose
+
 # --- Acquisition (future) ---
 # PyYAML
 # tifffile
