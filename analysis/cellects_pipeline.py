@@ -29,8 +29,8 @@ WANTED_METRICS = ["area", "perimeter", "circularity",
                   "eccentricity", "major_axis_len", "minor_axis_len", "solidity"]
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIR   = Path("data/physarum_sample/single_experiment")
-OUTPUT_DIR = Path("data/physarum_sample")
+DATA_DIR   = Path("data/datasets/physarum_sample/single_experiment")
+OUTPUT_DIR = Path("data/analysis/physarum_sample")
 CSV_OUT    = OUTPUT_DIR / "growth_over_time.csv"
 PLOT_OUT   = OUTPUT_DIR / "growth_curve.png"
 

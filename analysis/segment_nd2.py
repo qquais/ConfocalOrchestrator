@@ -22,8 +22,8 @@ from PIL import Image
 from cellpose import models, utils   # cellpose: the segmentation library
 
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
-INPUT_IMAGE  = "data/samples/frame_0.png"
-OUTPUT_IMAGE = "data/samples/frame_0_segmented.png"
+INPUT_IMAGE  = "data/analysis/nd2_sample/frame_0.png"
+OUTPUT_IMAGE = "data/analysis/nd2_sample/frame_0_segmented.png"
 
 # ── 2. Load the image ─────────────────────────────────────────────────────────
 # We load it as a NumPy array because Cellpose works with arrays, not files.

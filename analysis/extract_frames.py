@@ -1,6 +1,6 @@
 # extract_frames.py
 # Extract every frame from an .ND2 file and save as PNG files.
-# Output: data/cellects_test/img001.png, img002.png, ...
+# Output: data/frames/img001.png, img002.png, ...
 #
 # Run: python3 analysis/extract_frames.py
 
@@ -9,8 +9,8 @@ import numpy as np
 from PIL import Image
 from pathlib import Path
 
-ND2_FILE  = "data/samples/MRAP1 KO DN_10X03.nd2"
-OUTPUT_DIR = Path("data/cellects_test")
+ND2_FILE  = "data/raw/MRAP1 KO DN_10X03.nd2"
+OUTPUT_DIR = Path("data/frames")
 
 # Create output folder (mkdir -p equivalent)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

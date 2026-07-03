@@ -33,8 +33,8 @@ WANTED_METRICS = ["area", "perimeter", "circularity",
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Change ND2_FILE to your real time-lapse file when you have one.
-ND2_FILE   = "data/samples/MRAP1 KO DN_10X03.nd2"
-OUTPUT_DIR = Path("data/nd2_analysis")
+ND2_FILE   = "data/raw/MRAP1 KO DN_10X03.nd2"
+OUTPUT_DIR = Path("data/analysis/nd2_sample")
 
 # Allow passing ND2 path as a command-line argument:
 #   python3 analysis/nd2_pipeline.py path/to/my_timelapse.nd2
