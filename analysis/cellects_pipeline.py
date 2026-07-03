@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from numba.typed import Dict
 from cellects.image.one_image_analysis import OneImageAnalysis
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -35,10 +34,9 @@ tif_files = sorted(DATA_DIR.glob("image*.tif"),
 print(f"Found {len(tif_files)} frames in {DATA_DIR}")
 
 # ── 2. Build the colour-space dict Cellects needs ─────────────────────────────
-# Cellects uses numba's compiled Dict internally — a plain Python dict won't work.
+# Plain Python dict — Cellects' split_dict() handles conversion to numba types internally.
 # "bgr": [1,1,1] means "use all three BGR channels combined" (grayscale-like).
-csc_dict = Dict()
-csc_dict["bgr"] = np.array([1, 1, 1], dtype=np.int8)
+csc_dict = {"bgr": np.array([1, 1, 1], dtype=np.int8)}
 
 # ── 3. Segment every frame and record the organism area ───────────────────────
 records = []   # will hold one dict per frame
