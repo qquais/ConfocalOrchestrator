@@ -15,7 +15,7 @@ from PIL import Image  # used to save the image as a PNG
 
 # ── 1. Point to your .ND2 file ────────────────────────────────────────────────
 # Change this path to wherever your sample file lives.
-ND2_FILE = "data/samples/MRAP1 KO DN_10X03.nd2"
+ND2_FILE = "data/raw/MRAP1 KO DN_10X03.nd2"
 
 # ── 2. Open the file ──────────────────────────────────────────────────────────
 # `with` automatically closes the file when the block ends.
@@ -109,7 +109,7 @@ with nd2.ND2File(ND2_FILE) as f:
     frame = np.clip(frame, 0, 255).astype(np.uint8)  # clip any floating-point drift
 
     # ── 10. Save as PNG ───────────────────────────────────────────────────────
-    out_path = "data/samples/frame_0.png"
+    out_path = "data/analysis/nd2_sample/frame_0.png"
     img = Image.fromarray(frame)
     img.save(out_path)
     print(f"Saved PNG  : {out_path}")
