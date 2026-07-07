@@ -22,7 +22,8 @@ from pathlib import Path
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
 INPUT_IMAGE = "data/analysis/nd2_sample/frame_0.png"
 OUTPUT_DIR = Path("data/analysis/preprocessing")
-OUTPUT_IMAGE = OUTPUT_DIR / "frame_0_preprocessed.png"
+OUTPUT_IMAGE = OUTPUT_DIR / "frame_0_preprocessed.png"      # side-by-side BEFORE/AFTER
+AFTER_ONLY_IMAGE = OUTPUT_DIR / "frame_0_after.png"          # preprocessed frame only
 
 # Create the output folder if it doesn't exist yet (mkdir -p equivalent)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,7 +44,7 @@ print(f"Image size: {gray.shape[1]} x {gray.shape[0]} px (grayscale)")
 # sensor noise while keeping the overall shapes intact. "sigma" controls how
 # strong the blur is — bigger sigma = more smoothing.
 print("Step 1/3: Gaussian denoising...")
-denoised = gaussian(gray, sigma=1)
+denoised = gaussian(gray, sigma=0.5)
 
 # ── 4. Background correction (illumination correction) ───────────────────────
 # Confocal images often have uneven brightness across the field of view
@@ -53,8 +54,16 @@ denoised = gaussian(gray, sigma=1)
 # Dividing the image by this "background" flattens the uneven lighting while
 # keeping small structures visible, regardless of whether they are brighter
 # or darker than their surroundings.
+#
+# sigma needs to be bigger than the largest clusters of nuclei in the image
+# (here, nuclei clusters span several hundred pixels). If sigma is too small,
+# the "background" blur still dips down under dense nuclei clusters, so
+# dividing it out cancels out real contrast instead of just fixing lighting.
+# validation/check_preprocessing_quality.py caught exactly this with the
+# original sigma=50 (contrast and CNR both got WORSE) — sweeping sigma showed
+# 400 is big enough to only capture the slow lighting trend, not the nuclei.
 print("Step 2/3: Background correction (illumination)...")
-background = gaussian(denoised, sigma=50)
+background = gaussian(denoised, sigma=400)
 corrected = denoised / (background + 1e-6) * background.mean()
 corrected = np.clip(corrected, 0, 1)  # keep pixel values in the valid 0.0-1.0 range
 
@@ -86,7 +95,14 @@ font = ImageFont.load_default(size=80)
 draw.text((30, 30), "BEFORE", fill=(255, 0, 0), font=font)
 draw.text((before_img.width + 30, 30), "AFTER", fill=(255, 0, 0), font=font)
 
-# ── 8. Save the result ────────────────────────────────────────────────────────
+# ── 8. Save the results ───────────────────────────────────────────────────────
 comparison.save(OUTPUT_IMAGE)
 print(f"\nSaved side-by-side comparison: {OUTPUT_IMAGE}")
-print("Done! Open the PNG to compare the raw frame (left) with the preprocessed frame (right).")
+
+# Also save the preprocessed frame on its own (no BEFORE/AFTER labels, not
+# pasted next to the original) so downstream steps like segmentation can
+# load it directly as a normal image, instead of parsing the comparison PNG.
+after_img.save(AFTER_ONLY_IMAGE)
+print(f"Saved preprocessed frame only: {AFTER_ONLY_IMAGE}")
+
+print("\nDone! Open the comparison PNG to see raw (left) vs preprocessed (right).")
