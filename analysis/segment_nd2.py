@@ -22,8 +22,12 @@ from PIL import Image
 from cellpose import models, utils   # cellpose: the segmentation library
 
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
-INPUT_IMAGE  = "data/analysis/nd2_sample/frame_0.png"
-OUTPUT_IMAGE = "data/analysis/nd2_sample/frame_0_segmented.png"
+# Reads the PREPROCESSED frame (analysis/preprocess_nd2.py output) instead of
+# the raw frame — validation/check_preprocessing_quality.py confirmed this
+# version has a better contrast-to-noise ratio, so nuclei should be easier
+# for Cellpose to detect. Run preprocess_nd2.py first to generate this file.
+INPUT_IMAGE  = "data/analysis/preprocessing/frame_0_after.png"
+OUTPUT_IMAGE = "data/analysis/nd2_sample/frame_0_segmented_preprocessed.png"
 
 # ── 2. Load the image ─────────────────────────────────────────────────────────
 # We load it as a NumPy array because Cellpose works with arrays, not files.

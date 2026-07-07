@@ -9,9 +9,11 @@ Pillow
 # --- Segmentation (active) ---
 cellpose
 
+# --- OME-TIFF conversion (active) ---
+tifffile
+
 # --- Acquisition (future) ---
 # PyYAML
-# tifffile
 # aicsimageio
 # fastapi
 # uvicorn
