@@ -49,6 +49,31 @@
 - **Warning:** convert numpy types to plain Python int/float first
 - Controller connects via USB/LAN (Ti2-CTRE)
 
+## NIS-Elements Jobs API — Key Functions for Acquisition
+
+Source: [NIS-Elements AR Jobs Python API docs](https://www.nisoftware.net/NikonSaleApplication/Help/Docs-AR/eng_ar/task.system_section.html)
+
+- `XY_GetPosition()` → returns current stage x, y in microns
+- `XY_Move(x, y)` → moves stage to absolute position
+- `XY_MoveRelative(x, y)` → moves relative to current position
+- `Z_GetPosition()` → returns current z position in microns
+- `Z_Move(z)` → moves to absolute z position
+- `Z_MoveRelative(z)` → moves relative to current z
+- `ctx.shouldAbort()` → checks if user clicked abort in NIS UI
+- `Python_RunFile` / `Python_RunString` → runs Python from a NIS macro
+- **Warning:** numpy types must be converted to plain Python int/float before passing to any NIS function
+- Execution in the main thread is required for NIS macro functions
+- A side thread allows interaction with the JOBS progress dialog
+
+## Next Steps for Acquisition Engine
+
+Planned scripts under `acquisition/`:
+
+- `acquisition/nis_connection.py` → test stage connection (done)
+- `acquisition/run_protocol.py` → read YAML and run experiment
+- `acquisition/focus_check.py` → detect and correct focus drift
+- `acquisition/dashboard.py` → FastAPI live preview dashboard
+
 ## SDK Status
 
 - NIS-Elements Jobs Python API confirmed available
