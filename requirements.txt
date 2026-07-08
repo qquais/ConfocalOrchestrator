@@ -14,11 +14,11 @@ tifffile
 
 # --- Acquisition (active) ---
 PyYAML
+fastapi
+uvicorn
 
 # --- Acquisition (future) ---
 # aicsimageio
-# fastapi
-# uvicorn
 
 # --- Image Processing & Analysis (future) ---
 # opencv-python
