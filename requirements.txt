@@ -20,13 +20,14 @@ uvicorn
 # --- Acquisition (future) ---
 # aicsimageio
 
+# --- Image Processing & Analysis (active) ---
+scikit-image
+trackpy
+pandas
+matplotlib
+
 # --- Image Processing & Analysis (future) ---
 # opencv-python
-# scikit-image
-# cellpose
-# trackpy
-# pandas
-# matplotlib
 
 # --- Dev / Testing ---
 # pytest

@@ -18,11 +18,15 @@
 #   python run_protocol.py
 # ------------------------------------------------------------
 
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
+import uvicorn
 import yaml  # PyYAML - reads the .yaml protocol file into a Python dict
+
+import dashboard  # this repo's acquisition/dashboard.py - shared status dict + web UI
 
 # ── 1. Connect to the NIS-Elements Python API ────────────────────────────────
 try:
@@ -60,14 +64,38 @@ def to_plain_float(value) -> float:
 
 
 def should_abort() -> bool:
-    """Return True if the user clicked Abort in NIS-Elements, else False.
+    """Return True if abort was requested from NIS-Elements OR the dashboard.
 
-    Falls back to "never abort" if `ctx` isn't available (e.g. while reading
-    or testing this script off the microscope PC).
+    Two independent abort sources feed this: the user clicking Abort inside
+    NIS-Elements itself (ctx.shouldAbort()), and the user clicking the
+    "Stop / Abort Acquisition" button on the web dashboard (which just sets
+    dashboard.acquisition_status["abort_requested"] = True). Either one stops
+    the run at the next check.
+
+    ctx.shouldAbort() falls back to "never abort" if `ctx` isn't available
+    (e.g. while reading or testing this script off the microscope PC).
     """
-    if ctx is None:
-        return False
-    return ctx.shouldAbort()
+    nis_abort = ctx.shouldAbort() if ctx is not None else False
+    dashboard_abort = dashboard.acquisition_status["abort_requested"]
+    return nis_abort or dashboard_abort
+
+
+def start_dashboard_server() -> None:
+    """Run the dashboard's FastAPI app in a background thread.
+
+    It has to live in THIS process (not a separately-launched `python
+    dashboard.py`) so that dashboard.acquisition_status is the exact same
+    dict object the acquisition loop below updates - a separate process
+    would have its own independent copy and would never see real progress.
+    The thread is a daemon so it doesn't stop the script from exiting once
+    the acquisition loop finishes.
+    """
+    def _run():
+        uvicorn.run(dashboard.app, host="0.0.0.0", port=8000, log_level="warning")
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    print("Dashboard running at http://localhost:8000 (or http://<this-pc-ip>:8000 remotely)")
 
 
 # ── 2. Load the protocol file ────────────────────────────────────────────────
@@ -189,6 +217,7 @@ def run_acquisition(protocol: dict) -> int:
         # ── Check for user abort before starting this timepoint ──────────
         if should_abort():
             print(f"\nAbort requested by user - stopping before timepoint {timepoint_label}.")
+            dashboard.update_status(status="aborted")
             break
 
         print(f"\n--- Timepoint {timepoint_label} ---")
@@ -212,6 +241,12 @@ def run_acquisition(protocol: dict) -> int:
                     for channel in channels:
                         capture_image(channel)
                         images_captured += 1
+                        dashboard.update_status(
+                            timepoint_current=timepoint + 1,
+                            position_label=position["label"],
+                            channel_name=channel["name"],
+                            images_captured=images_captured,
+                        )
 
         except Exception as e:
             # A failure partway through one timepoint (e.g. one bad move or
@@ -246,13 +281,30 @@ def main():
         print("Acquisition cancelled by user. No stage motion performed.")
         return
 
+    start_dashboard_server()
+
+    timelapse = protocol["timelapse"]
+    dashboard.update_status(
+        status="running",
+        started_at=time.time(),
+        estimated_total_seconds=timelapse["duration_hours"] * 3600,
+        timepoint_total=timelapse.get("total_timepoints"),
+        images_captured=0,
+        error_message=None,
+        abort_requested=False,
+    )
+
     print(f"\nAcquisition started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     try:
         images_captured = run_acquisition(protocol)
     except Exception as e:
         print(f"\nAcquisition FAILED: {e}")
+        dashboard.update_status(status="error", error_message=str(e))
         return
+
+    if dashboard.acquisition_status["status"] != "aborted":
+        dashboard.update_status(status="complete")
 
     print(f"\nAcquisition complete. Total images captured: {images_captured}")
 

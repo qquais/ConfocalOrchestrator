@@ -46,7 +46,13 @@ data/
 ConfocalOrchestrator/
 ├── acquisition/     # Microscope control and image capture (in progress)
 │                    #   nis_connection.py — stage connection smoke test (done)
-│                    #   run_protocol.py, focus_check.py, dashboard.py — planned next
+│                    #   run_protocol.py — reads a protocol YAML and runs the full
+│                    #     timepoint/position/z-stack/channel loop (done, untested on real hardware)
+│                    #   dashboard.py — live web dashboard (status/frame/abort), wired into
+│                    #     run_protocol.py's loop so it reflects a real run (done, tested)
+│                    #   focus_check.py — Laplacian-variance focus drift detection,
+│                    #     the safety net for overnight runs (done, tested; not yet
+│                    #     called from run_protocol.py's loop)
 ├── analysis/        # Preprocessing, segmentation, and tracking scripts
 ├── validation/      # Accuracy benchmarking
 ├── protocols/       # Imaging protocol files (e.g. example_protocol.yaml)
