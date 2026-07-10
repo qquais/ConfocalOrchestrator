@@ -28,6 +28,8 @@ Scripts handle the full ND2 → results workflow:
 | `analysis/track_nuclei.py` | PNG frame sequence | Per-nucleus trajectories CSV + visualisation (Cellpose + trackpy) |
 | `analysis/convert_to_ometiff.py` | ND2 file | OME-TIFF (pixels + metadata in one open format) |
 
+Cellpose defaults to `CELLPOSE_GPU=auto`, which uses CUDA when PyTorch can see a GPU and falls back to CPU otherwise. To force GPU mode, run a script like `CELLPOSE_GPU=1 python3 analysis/segment_nd2.py`.
+
 **Metrics tracked per frame:** area, perimeter, circularity, eccentricity, major/minor axis length, solidity.
 
 ## Data Folder Structure

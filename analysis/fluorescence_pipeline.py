@@ -31,6 +31,7 @@
 # -----------------------------------------------------------------------
 
 import time
+import os
 from pathlib import Path
 
 import numpy as np
@@ -43,9 +44,21 @@ from skimage.filters import gaussian
 from skimage.measure import regionprops       # measures shape properties of labelled regions
 from skimage.util import img_as_float
 
+try:
+    from analysis.cellpose_runtime import resolve_cellpose_gpu_mode
+except ImportError:
+    from cellpose_runtime import resolve_cellpose_gpu_mode
+
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 
-DATA_DIR   = Path("data/datasets/Fluo-N2DH-SIM/Fluo-N2DH-SIM+/01")   # sequence 1 frames
+DEFAULT_DATA_DIR = Path("data/datasets/Fluo-N2DH-SIM/Fluo-N2DH-SIM+/01")
+
+env_data_dir = os.getenv("FLUORESCENCE_DATA_DIR")
+if env_data_dir:
+    DATA_DIR = Path(env_data_dir)
+else:
+    DATA_DIR = DEFAULT_DATA_DIR
+
 OUTPUT_DIR = Path("data/analysis/fluorescence")
 TRAJ_CSV   = OUTPUT_DIR / "trajectories.csv"
 VIZ_IMAGE  = OUTPUT_DIR / "trajectories.png"
@@ -77,7 +90,10 @@ print("=" * 60)
 
 frame_paths = sorted(DATA_DIR.glob("t*.tif"))[:N_FRAMES]
 if len(frame_paths) < N_FRAMES:
-    raise RuntimeError(f"Expected {N_FRAMES} frames in {DATA_DIR}, found {len(frame_paths)}")
+    raise RuntimeError(
+        f"Expected at least {N_FRAMES} TIFF frames in {DATA_DIR}, found {len(frame_paths)}. "
+        "Set FLUORESCENCE_DATA_DIR to a folder containing t000.tif, t001.tif, ..."
+    )
 
 frames = [tifffile.imread(p) for p in frame_paths]
 
@@ -107,11 +123,9 @@ print("STEP 3 — Cellpose segmentation (detecting nuclei in each frame)")
 print("=" * 60)
 print("  Loading Cellpose model (cellpose-SAM, cpsam_v2)...")
 
-
-# To run on HPC with GPU: comment gpu=False line, uncomment gpu=True line below it.
-# GPU CONFIG: comment/uncomment based on environment
-model = models.CellposeModel(gpu=False)  # Mac/CPU (default)
-# model = models.CellposeModel(gpu=True)  # HPC/GPU (Gilbreth)
+USE_GPU = resolve_cellpose_gpu_mode()
+print(f"  GPU mode     : {'enabled' if USE_GPU else 'disabled'}")
+model = models.CellposeModel(gpu=USE_GPU)
 
 all_masks = []
 for i, frame in enumerate(denoised_frames):

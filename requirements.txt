@@ -25,6 +25,7 @@ scikit-image
 trackpy
 pandas
 matplotlib
+pytz
 
 # --- Image Processing & Analysis (future) ---
 # opencv-python

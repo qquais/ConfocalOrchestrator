@@ -21,6 +21,10 @@ import numpy as np
 from PIL import Image
 from cellpose import models, utils   # cellpose: the segmentation library
 
+try:
+	from analysis.cellpose_runtime import resolve_cellpose_gpu_mode
+except ImportError:
+	from cellpose_runtime import resolve_cellpose_gpu_mode
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
 # Reads the PREPROCESSED frame (analysis/preprocess_nd2.py output) instead of
 # the raw frame — validation/check_preprocessing_quality.py confirmed this
@@ -50,13 +54,13 @@ print(f"Array shape   : {img.shape}  (height x width x colour channels)")
 
 # ── 3. Load the Cellpose nuclei model ─────────────────────────────────────────
 # model_type='nuclei' uses a model pre-trained specifically on cell nuclei.
-# gpu=False runs on CPU (slower but works everywhere without extra setup).
-# Set gpu=True if you have a CUDA GPU and want faster results.
+# GPU mode is resolved from CELLPOSE_GPU and falls back to CPU if CUDA is
+# unavailable.
 print("\nLoading Cellpose nuclei model (downloads on first run)...")
 # Cellpose 3.x+ uses CellposeModel instead of the old Cellpose class
-# GPU CONFIG: comment/uncomment based on environment
-model = models.CellposeModel(model_type="nuclei", gpu=False)  # Mac/CPU (default)
-# model = models.CellposeModel(model_type="nuclei", gpu=True)  # HPC/GPU (Gilbreth)
+USE_GPU = resolve_cellpose_gpu_mode()
+print(f"GPU mode       : {'enabled' if USE_GPU else 'disabled'}")
+model = models.CellposeModel(model_type="nuclei", gpu=USE_GPU)
 
 # ── 4. Run segmentation ───────────────────────────────────────────────────────
 # model.eval() is the main call that detects cells.

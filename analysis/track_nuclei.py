@@ -30,6 +30,11 @@ from cellpose import models
 from skimage.measure import regionprops   # measures shape properties of labelled regions
 import trackpy as tp                       # particle/nucleus tracking library
 
+try:
+    from analysis.cellpose_runtime import resolve_cellpose_gpu_mode
+except ImportError:
+    from cellpose_runtime import resolve_cellpose_gpu_mode
+
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 # Adjust these settings without touching the rest of the script.
 
@@ -97,9 +102,9 @@ print("STEP 2 — Cellpose segmentation  (detecting nuclei in each frame)")
 print("=" * 60)
 print("  Loading Cellpose nuclei model (downloads weights ~200 MB on first run)...")
 
-# GPU CONFIG: comment/uncomment based on environment
-model = models.CellposeModel(model_type="nuclei", gpu=False)  # Mac/CPU (default)
-# model = models.CellposeModel(model_type="nuclei", gpu=True)  # HPC/GPU (Gilbreth)
+USE_GPU = resolve_cellpose_gpu_mode()
+print(f"  GPU mode     : {'enabled' if USE_GPU else 'disabled'}")
+model = models.CellposeModel(model_type="nuclei", gpu=USE_GPU)
 
 all_masks = []   # one mask array per frame
 
