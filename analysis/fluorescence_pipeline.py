@@ -59,7 +59,11 @@ if env_data_dir:
 else:
     DATA_DIR = DEFAULT_DATA_DIR
 
-OUTPUT_DIR = Path("data/analysis/fluorescence")
+env_output_dir = os.getenv("FLUORESCENCE_OUTPUT_DIR")
+if env_output_dir:
+    OUTPUT_DIR = Path(env_output_dir)
+else:
+    OUTPUT_DIR = Path("data/analysis/fluorescence")
 TRAJ_CSV   = OUTPUT_DIR / "trajectories.csv"
 VIZ_IMAGE  = OUTPUT_DIR / "trajectories.png"
 
@@ -112,6 +116,7 @@ print("=" * 60)
 
 denoised_frames = [gaussian(img_as_float(f), sigma=GAUSSIAN_SIGMA) for f in frames]
 print(f"  Denoised {len(denoised_frames)} frames")
+print("  Note: Cellpose runs on the raw 16-bit frames because seq02 loses signal after smoothing.")
 
 # ── STEP 3: Cellpose nucleus segmentation ──────────────────────────────────────
 # cellpose v4 uses a single general-purpose "cellpose-SAM" model
@@ -128,7 +133,7 @@ print(f"  GPU mode     : {'enabled' if USE_GPU else 'disabled'}")
 model = models.CellposeModel(gpu=USE_GPU)
 
 all_masks = []
-for i, frame in enumerate(denoised_frames):
+for i, frame in enumerate(frames):
     t0 = time.time()
     masks, flows, styles = model.eval(frame, channels=[0, 0], diameter=NUCLEUS_DIAMETER)
     all_masks.append(masks)
@@ -158,8 +163,11 @@ print(f"  Total point detections across all {N_FRAMES} frames: {len(detections)}
 # ── STEP 5: Link detections into trajectories with trackpy ─────────────────────
 # Nucleus diameter measured from frame 0's segmentation sets the search range:
 # a nucleus should not need to move further than ~2 diameters between frames.
-diam_est = np.sqrt(detections.loc[detections["frame"] == 0, "area"].median() / np.pi) * 2
-search_range = max(15, int(diam_est * 2))
+if detections.empty:
+    search_range = 15
+else:
+    diam_est = np.sqrt(detections.loc[detections["frame"] == 0, "area"].median() / np.pi) * 2
+    search_range = max(15, int(diam_est * 2))
 
 print("\n" + "=" * 60)
 print("STEP 5 — Linking nuclei into trajectories (trackpy)")
@@ -167,14 +175,20 @@ print("=" * 60)
 print(f"  search_range = {search_range} px  (~2x median nucleus diameter of frame 0)")
 print(f"  memory       = {MEMORY} frames")
 
-trajectories = tp.link(detections, search_range=search_range, memory=MEMORY,
-                        adaptive_stop=0.1, adaptive_step=0.95)
-n_raw = trajectories["particle"].nunique()
-print(f"  Linked {len(trajectories)} detections -> {n_raw} raw trajectories")
+if detections.empty:
+    trajectories = pd.DataFrame(columns=["frame", "x", "y", "area", "particle"])
+    n_raw = 0
+    n_kept = 0
+    print("  No detections found, so no trajectories were linked")
+else:
+    trajectories = tp.link(detections, search_range=search_range, memory=MEMORY,
+                            adaptive_stop=0.1, adaptive_step=0.95)
+    n_raw = trajectories["particle"].nunique()
+    print(f"  Linked {len(trajectories)} detections -> {n_raw} raw trajectories")
 
-trajectories = tp.filter_stubs(trajectories, threshold=MIN_FRAMES)
-n_kept = trajectories["particle"].nunique()
-print(f"  After removing tracks shorter than {MIN_FRAMES} frames: {n_kept} trajectories kept")
+    trajectories = tp.filter_stubs(trajectories, threshold=MIN_FRAMES)
+    n_kept = trajectories["particle"].nunique()
+    print(f"  After removing tracks shorter than {MIN_FRAMES} frames: {n_kept} trajectories kept")
 
 # ── STEP 6: Save trajectory CSV + visualisation ────────────────────────────────
 print("\n" + "=" * 60)
@@ -194,15 +208,15 @@ print(f"  Saved CSV : {TRAJ_CSV}  ({len(output)} rows)")
 fig, ax = plt.subplots(figsize=(10, 9))
 ax.imshow(frames[0], cmap="gray")
 
-unique_ids = output["nucleus_id"].unique()
-color_map = plt.cm.tab20(np.linspace(0, 1, len(unique_ids)))
+unique_ids = output["nucleus_id"].unique() if not output.empty else []
+color_map = plt.cm.tab20(np.linspace(0, 1, len(unique_ids))) if len(unique_ids) else []
 
 for nucleus_id, color in zip(unique_ids, color_map):
     traj = output[output["nucleus_id"] == nucleus_id].sort_values("frame")
     ax.plot(traj["x"], traj["y"], "-o", color=color, markersize=3, linewidth=1.2)
 
 ax.set_title(
-    f"Nucleus trajectories — Fluo-N2DH-SIM+ seq. 01, frames 0-{N_FRAMES - 1}\n"
+    f"Nucleus trajectories — Fluo-N2DH-SIM+ seq. {DATA_DIR.name}, frames 0-{N_FRAMES - 1}\n"
     f"{n_kept} trajectories over {len(unique_ids)} tracked nuclei",
     fontsize=11,
 )
@@ -214,7 +228,7 @@ plt.close()
 print(f"  Saved plot: {VIZ_IMAGE}")
 
 # ── SUMMARY ─────────────────────────────────────────────────────────────────────
-avg_len = output.groupby("nucleus_id").size().mean()
+avg_len = 0.0 if output.empty else output.groupby("nucleus_id").size().mean()
 total_nuclei_detected = len(detections)
 
 print("\n" + "=" * 60)
