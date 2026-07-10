@@ -107,7 +107,11 @@ print("STEP 3 — Cellpose segmentation (detecting nuclei in each frame)")
 print("=" * 60)
 print("  Loading Cellpose model (cellpose-SAM, cpsam_v2)...")
 
-model = models.CellposeModel(gpu=False)
+
+# To run on HPC with GPU: comment gpu=False line, uncomment gpu=True line below it.
+# GPU CONFIG: comment/uncomment based on environment
+model = models.CellposeModel(gpu=False)  # Mac/CPU (default)
+# model = models.CellposeModel(gpu=True)  # HPC/GPU (Gilbreth)
 
 all_masks = []
 for i, frame in enumerate(denoised_frames):

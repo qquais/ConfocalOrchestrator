@@ -54,7 +54,9 @@ print(f"Array shape   : {img.shape}  (height x width x colour channels)")
 # Set gpu=True if you have a CUDA GPU and want faster results.
 print("\nLoading Cellpose nuclei model (downloads on first run)...")
 # Cellpose 3.x+ uses CellposeModel instead of the old Cellpose class
-model = models.CellposeModel(model_type="nuclei", gpu=False)
+# GPU CONFIG: comment/uncomment based on environment
+model = models.CellposeModel(model_type="nuclei", gpu=False)  # Mac/CPU (default)
+# model = models.CellposeModel(model_type="nuclei", gpu=True)  # HPC/GPU (Gilbreth)
 
 # ── 4. Run segmentation ───────────────────────────────────────────────────────
 # model.eval() is the main call that detects cells.

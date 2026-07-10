@@ -97,7 +97,9 @@ print("STEP 2 — Cellpose segmentation  (detecting nuclei in each frame)")
 print("=" * 60)
 print("  Loading Cellpose nuclei model (downloads weights ~200 MB on first run)...")
 
-model = models.CellposeModel(model_type="nuclei", gpu=False)
+# GPU CONFIG: comment/uncomment based on environment
+model = models.CellposeModel(model_type="nuclei", gpu=False)  # Mac/CPU (default)
+# model = models.CellposeModel(model_type="nuclei", gpu=True)  # HPC/GPU (Gilbreth)
 
 all_masks = []   # one mask array per frame
 
