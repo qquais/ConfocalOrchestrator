@@ -1,47 +1,25 @@
-# fluorescence_pipeline.py
-# -----------------------------------------------------------------------
-# Full nucleus-tracking pipeline run on REAL fluorescence microscopy data:
-# the Fluo-N2DH-SIM+ dataset from the Cell Tracking Challenge (CTC).
-#
-# Unlike our earlier brightfield/ND2 samples, this dataset is the correct
-# DATA TYPE for the pipeline: bright glowing nuclei on a dark background,
-# which is what Cellpose's nucleus model and the rest of this pipeline
-# expect. It's simulated data, but it mimics real Physarum nuclear imaging.
-#
-# PIPELINE OVERVIEW
-# -----------------
-#   01/t000.tif ... t009.tif  (first 10 real time-lapse frames)
-#       |
-#       v  Step 1 — Load frames in order (tifffile)
-#       v  Step 2 — Gaussian denoise each frame (scikit-image)
-#       v  Step 3 — Cellpose detects nuclei in each frame  -> mask arrays
-#       v  Step 4 — regionprops extracts centroid + area per nucleus
-#       v  Step 5 — trackpy links the SAME nucleus across frames -> trajectories
-#       v  Step 6 — Save CSV + visualisation
-#
-# How to run (from the repo root, with .venv activated):
-#   python3 analysis/fluorescence_pipeline.py
-#
-# Requirements: cellpose, trackpy, scikit-image, tifffile, matplotlib, pandas
-#
-# NOTE ON RUNTIME: Cellpose here uses the cellpose-SAM model (cellpose v4),
-# which is much slower per-image on CPU than the old "nuclei" model used in
-# earlier scripts (segment_nd2.py / track_nuclei.py) — roughly ~3 minutes
-# per 690x628 frame on Apple Silicon CPU. 10 frames takes ~30 minutes.
-# -----------------------------------------------------------------------
+"""Fluorescence nucleus tracking pipeline with command-line arguments.
 
+This script links glowing nuclei in fluorescence time-lapse frames, then saves
+the trajectories and a simple overlay plot. The default settings still run the
+original Physarum fluorescence dataset, but you can now point it at another
+frame folder without setting environment variables first.
+"""
+
+from __future__ import annotations
+
+import argparse
 import time
-import os
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import tifffile
-import trackpy as tp                          # particle/nucleus tracking library
+import trackpy as tp
 from cellpose import models
 from skimage.filters import gaussian
-from skimage.measure import regionprops       # measures shape properties of labelled regions
+from skimage.measure import regionprops
 from skimage.util import img_as_float
 
 try:
@@ -49,25 +27,10 @@ try:
 except ImportError:
     from cellpose_runtime import resolve_cellpose_gpu_mode
 
-# ── CONFIGURATION ──────────────────────────────────────────────────────────────
 
-DEFAULT_DATA_DIR = Path("data/datasets/Fluo-N2DH-SIM/Fluo-N2DH-SIM+/01")
-
-env_data_dir = os.getenv("FLUORESCENCE_DATA_DIR")
-if env_data_dir:
-    DATA_DIR = Path(env_data_dir)
-else:
-    DATA_DIR = DEFAULT_DATA_DIR
-
-env_output_dir = os.getenv("FLUORESCENCE_OUTPUT_DIR")
-if env_output_dir:
-    OUTPUT_DIR = Path(env_output_dir)
-else:
-    OUTPUT_DIR = Path("data/analysis/fluorescence")
-TRAJ_CSV   = OUTPUT_DIR / "trajectories.csv"
-VIZ_IMAGE  = OUTPUT_DIR / "trajectories.png"
-
-N_FRAMES = 10   # how many frames to load, in order, from DATA_DIR
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_DIR = REPO_ROOT / "data" / "datasets" / "Fluo-N2DH-SIM" / "Fluo-N2DH-SIM+" / "01"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "fluorescence"
 
 # Gaussian denoising strength (Step 2). These are clean simulated images,
 # so a small sigma is enough to smooth sensor-style noise without blurring
@@ -78,166 +41,207 @@ GAUSSIAN_SIGMA = 1.0
 NUCLEUS_DIAMETER = None
 
 # trackpy linking parameters (Step 5).
-# SEARCH_RANGE is set to roughly 2x the nucleus diameter Cellpose finds in
-# frame 0 (measured below, after segmentation) so a nucleus can be matched
-# to itself in the next frame even with modest simulated drift, without
-# being so large that unrelated nearby nuclei get confused for each other.
-MEMORY = 2       # max frames a nucleus can be missed and still be re-linked
-MIN_FRAMES = 3   # drop trajectories shorter than this many frames (likely noise)
+MEMORY = 2  # max frames a nucleus can be missed and still be re-linked
+MIN_FRAMES = 3  # drop trajectories shorter than this many frames (likely noise)
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── STEP 1: Load the first N_FRAMES real frames, in order ─────────────────────
-print("=" * 60)
-print("STEP 1 — Loading real fluorescence frames")
-print("=" * 60)
+def parse_args() -> argparse.Namespace:
+    """Read the dataset, output folder, and frame count from the command line."""
 
-frame_paths = sorted(DATA_DIR.glob("t*.tif"))[:N_FRAMES]
-if len(frame_paths) < N_FRAMES:
-    raise RuntimeError(
-        f"Expected at least {N_FRAMES} TIFF frames in {DATA_DIR}, found {len(frame_paths)}. "
-        "Set FLUORESCENCE_DATA_DIR to a folder containing t000.tif, t001.tif, ..."
+    parser = argparse.ArgumentParser(description="Track fluorescence nuclei across frames.")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=DEFAULT_DATA_DIR,
+        help="Folder containing TIFF frames (default: original Fluo-N2DH-SIM+ seq. 01)",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Folder where CSV and PNG results will be written",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=10,
+        help="How many frames to process",
+    )
+    return parser.parse_args()
 
-frames = [tifffile.imread(p) for p in frame_paths]
 
-print(f"  Source folder : {DATA_DIR}")
-print(f"  Frames loaded : {len(frames)}  ({frame_paths[0].name} .. {frame_paths[-1].name})")
-print(f"  Frame shape   : {frames[0].shape}  dtype={frames[0].dtype}")
+def resolve_path(path: Path) -> Path:
+    """Treat relative paths as repo-root paths so the script is easy to run."""
 
-# ── STEP 2: Gaussian denoising (scikit-image) ──────────────────────────────────
-# img_as_float() converts the 16-bit images to float64 in [0, 1] so scikit-image
-# filters behave predictably. Cellpose normalizes intensities internally
-# (percentile-based), so feeding it a [0, 1] float image works the same as
-# feeding it the raw 16-bit image.
-print("\n" + "=" * 60)
-print("STEP 2 — Gaussian denoising (sigma=%.1f)" % GAUSSIAN_SIGMA)
-print("=" * 60)
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
 
-denoised_frames = [gaussian(img_as_float(f), sigma=GAUSSIAN_SIGMA) for f in frames]
-print(f"  Denoised {len(denoised_frames)} frames")
-print("  Note: Cellpose runs on the raw 16-bit frames because seq02 loses signal after smoothing.")
 
-# ── STEP 3: Cellpose nucleus segmentation ──────────────────────────────────────
-# cellpose v4 uses a single general-purpose "cellpose-SAM" model
-# (pretrained_model='cpsam_v2') instead of the old model_type="nuclei"/"cyto"
-# dictionary from earlier cellpose versions. channels=[0, 0] tells it the
-# image is single-channel grayscale with no separate cytoplasm channel.
-print("\n" + "=" * 60)
-print("STEP 3 — Cellpose segmentation (detecting nuclei in each frame)")
-print("=" * 60)
-print("  Loading Cellpose model (cellpose-SAM, cpsam_v2)...")
+def main() -> None:
+    args = parse_args()
+    data_dir = resolve_path(args.data)
+    output_dir = resolve_path(args.output)
+    n_frames = args.frames
 
-USE_GPU = resolve_cellpose_gpu_mode()
-print(f"  GPU mode     : {'enabled' if USE_GPU else 'disabled'}")
-model = models.CellposeModel(gpu=USE_GPU)
+    traj_csv = output_dir / "trajectories.csv"
+    viz_image = output_dir / "trajectories.png"
 
-all_masks = []
-for i, frame in enumerate(frames):
-    t0 = time.time()
-    masks, flows, styles = model.eval(frame, channels=[0, 0], diameter=NUCLEUS_DIAMETER)
-    all_masks.append(masks)
-    n_detected = int(masks.max())
-    print(f"  Frame {i} ({frame_paths[i].name}): {n_detected} nuclei detected "
-          f"[{time.time() - t0:.1f}s]")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-# ── STEP 4: Extract centroids + area with regionprops ──────────────────────────
-print("\n" + "=" * 60)
-print("STEP 4 — Extracting nucleus centroids (mask -> centroid per nucleus)")
-print("=" * 60)
+    # STEP 1: Load the first N frames in order.
+    print("=" * 60)
+    print("STEP 1 — Loading real fluorescence frames")
+    print("=" * 60)
 
-rows = []
-for frame_idx, masks in enumerate(all_masks):
-    for region in regionprops(masks):
-        cy, cx = region.centroid   # regionprops gives (row, col) = (y, x) order
-        rows.append({
-            "frame": frame_idx,
-            "x": cx,
-            "y": cy,
-            "area": region.area,
-        })
+    frame_paths = sorted(data_dir.glob("t*.tif"))[:n_frames]
+    if len(frame_paths) < n_frames:
+        raise RuntimeError(
+            f"Expected at least {n_frames} TIFF frames in {data_dir}, found {len(frame_paths)}. "
+            "Make sure the folder contains files like t000.tif, t001.tif, ..."
+        )
 
-detections = pd.DataFrame(rows)
-print(f"  Total point detections across all {N_FRAMES} frames: {len(detections)}")
+    frames = [tifffile.imread(path) for path in frame_paths]
 
-# ── STEP 5: Link detections into trajectories with trackpy ─────────────────────
-# Nucleus diameter measured from frame 0's segmentation sets the search range:
-# a nucleus should not need to move further than ~2 diameters between frames.
-if detections.empty:
-    search_range = 15
-else:
-    diam_est = np.sqrt(detections.loc[detections["frame"] == 0, "area"].median() / np.pi) * 2
-    search_range = max(15, int(diam_est * 2))
+    print(f"  Source folder : {data_dir}")
+    print(f"  Frames loaded : {len(frames)}  ({frame_paths[0].name} .. {frame_paths[-1].name})")
+    print(f"  Frame shape   : {frames[0].shape}  dtype={frames[0].dtype}")
 
-print("\n" + "=" * 60)
-print("STEP 5 — Linking nuclei into trajectories (trackpy)")
-print("=" * 60)
-print(f"  search_range = {search_range} px  (~2x median nucleus diameter of frame 0)")
-print(f"  memory       = {MEMORY} frames")
+    # STEP 2: Gaussian denoising.
+    # img_as_float() converts the 16-bit images to float64 in [0, 1] so
+    # scikit-image filters behave predictably.
+    print("\n" + "=" * 60)
+    print("STEP 2 — Gaussian denoising (sigma=%.1f)" % GAUSSIAN_SIGMA)
+    print("=" * 60)
 
-if detections.empty:
-    trajectories = pd.DataFrame(columns=["frame", "x", "y", "area", "particle"])
-    n_raw = 0
-    n_kept = 0
-    print("  No detections found, so no trajectories were linked")
-else:
-    trajectories = tp.link(detections, search_range=search_range, memory=MEMORY,
-                            adaptive_stop=0.1, adaptive_step=0.95)
-    n_raw = trajectories["particle"].nunique()
-    print(f"  Linked {len(trajectories)} detections -> {n_raw} raw trajectories")
+    denoised_frames = [gaussian(img_as_float(frame), sigma=GAUSSIAN_SIGMA) for frame in frames]
+    print(f"  Denoised {len(denoised_frames)} frames")
+    print("  Note: Cellpose runs on the raw 16-bit frames because the denoised frames are only for inspection.")
 
-    trajectories = tp.filter_stubs(trajectories, threshold=MIN_FRAMES)
-    n_kept = trajectories["particle"].nunique()
-    print(f"  After removing tracks shorter than {MIN_FRAMES} frames: {n_kept} trajectories kept")
+    # STEP 3: Cellpose nucleus segmentation.
+    print("\n" + "=" * 60)
+    print("STEP 3 — Cellpose segmentation (detecting nuclei in each frame)")
+    print("=" * 60)
+    print("  Loading Cellpose model (cellpose-SAM, cpsam_v2)...")
 
-# ── STEP 6: Save trajectory CSV + visualisation ────────────────────────────────
-print("\n" + "=" * 60)
-print("STEP 6 — Saving trajectory CSV and visualisation")
-print("=" * 60)
+    use_gpu = resolve_cellpose_gpu_mode()
+    print(f"  GPU mode     : {'enabled' if use_gpu else 'disabled'}")
+    model = models.CellposeModel(gpu=use_gpu)
 
-output = (
-    trajectories.reset_index(drop=True)
-    [["particle", "frame", "x", "y", "area"]]
-    .rename(columns={"particle": "nucleus_id"})
-    .sort_values(["nucleus_id", "frame"])
-    .reset_index(drop=True)
-)
-output.to_csv(TRAJ_CSV, index=False)
-print(f"  Saved CSV : {TRAJ_CSV}  ({len(output)} rows)")
+    all_masks = []
+    for index, frame in enumerate(frames):
+        t0 = time.time()
+        masks, flows, styles = model.eval(frame, channels=[0, 0], diameter=NUCLEUS_DIAMETER)
+        all_masks.append(masks)
+        detected_count = int(masks.max())
+        print(f"  Frame {index} ({frame_paths[index].name}): {detected_count} nuclei detected [{time.time() - t0:.1f}s]")
 
-fig, ax = plt.subplots(figsize=(10, 9))
-ax.imshow(frames[0], cmap="gray")
+    # STEP 4: Extract centroids + area.
+    print("\n" + "=" * 60)
+    print("STEP 4 — Extracting nucleus centroids (mask -> centroid per nucleus)")
+    print("=" * 60)
 
-unique_ids = output["nucleus_id"].unique() if not output.empty else []
-color_map = plt.cm.tab20(np.linspace(0, 1, len(unique_ids))) if len(unique_ids) else []
+    rows = []
+    for frame_index, masks in enumerate(all_masks):
+        for region in regionprops(masks):
+            cy, cx = region.centroid  # regionprops gives (row, col) = (y, x) order
+            rows.append(
+                {
+                    "frame": frame_index,
+                    "x": cx,
+                    "y": cy,
+                    "area": region.area,
+                }
+            )
 
-for nucleus_id, color in zip(unique_ids, color_map):
-    traj = output[output["nucleus_id"] == nucleus_id].sort_values("frame")
-    ax.plot(traj["x"], traj["y"], "-o", color=color, markersize=3, linewidth=1.2)
+    detections = pd.DataFrame(rows)
+    print(f"  Total point detections across all {n_frames} frames: {len(detections)}")
 
-ax.set_title(
-    f"Nucleus trajectories — Fluo-N2DH-SIM+ seq. {DATA_DIR.name}, frames 0-{N_FRAMES - 1}\n"
-    f"{n_kept} trajectories over {len(unique_ids)} tracked nuclei",
-    fontsize=11,
-)
-ax.set_xlabel("x (pixels)")
-ax.set_ylabel("y (pixels)")
-plt.tight_layout()
-plt.savefig(VIZ_IMAGE, dpi=150)
-plt.close()
-print(f"  Saved plot: {VIZ_IMAGE}")
+    # STEP 5: Link detections into trajectories with trackpy.
+    if detections.empty:
+        search_range = 15
+    else:
+        diam_est = np.sqrt(detections.loc[detections["frame"] == 0, "area"].median() / np.pi) * 2
+        search_range = max(15, int(diam_est * 2))
 
-# ── SUMMARY ─────────────────────────────────────────────────────────────────────
-avg_len = 0.0 if output.empty else output.groupby("nucleus_id").size().mean()
-total_nuclei_detected = len(detections)
+    print("\n" + "=" * 60)
+    print("STEP 5 — Linking nuclei into trajectories (trackpy)")
+    print("=" * 60)
+    print(f"  search_range = {search_range} px  (~2x median nucleus diameter of frame 0)")
+    print(f"  memory       = {MEMORY} frames")
 
-print("\n" + "=" * 60)
-print("SUMMARY")
-print("=" * 60)
-print(f"  Frames processed        : {N_FRAMES}")
-print(f"  Total nuclei detected   : {total_nuclei_detected}  (sum across all frames)")
-print(f"  Raw trajectories linked : {n_raw}")
-print(f"  Trajectories kept       : {n_kept}  (>= {MIN_FRAMES} frames long)")
-print(f"  Average track length    : {avg_len:.1f} frames")
-print(f"\n  Trajectory CSV : {TRAJ_CSV}")
-print(f"  Visualisation  : {VIZ_IMAGE}")
+    if detections.empty:
+        trajectories = pd.DataFrame(columns=["frame", "x", "y", "area", "particle"])
+        n_raw = 0
+        n_kept = 0
+        print("  No detections found, so no trajectories were linked")
+    else:
+        trajectories = tp.link(
+            detections,
+            search_range=search_range,
+            memory=MEMORY,
+            adaptive_stop=0.1,
+            adaptive_step=0.95,
+        )
+        n_raw = trajectories["particle"].nunique()
+        print(f"  Linked {len(trajectories)} detections -> {n_raw} raw trajectories")
+
+        trajectories = tp.filter_stubs(trajectories, threshold=MIN_FRAMES)
+        n_kept = trajectories["particle"].nunique()
+        print(f"  After removing tracks shorter than {MIN_FRAMES} frames: {n_kept} trajectories kept")
+
+    # STEP 6: Save trajectory CSV + visualisation.
+    print("\n" + "=" * 60)
+    print("STEP 6 — Saving trajectory CSV and visualisation")
+    print("=" * 60)
+
+    output = (
+        trajectories.reset_index(drop=True)
+        [["particle", "frame", "x", "y", "area"]]
+        .rename(columns={"particle": "nucleus_id"})
+        .sort_values(["nucleus_id", "frame"])
+        .reset_index(drop=True)
+    )
+    output.to_csv(traj_csv, index=False)
+    print(f"  Saved CSV : {traj_csv}  ({len(output)} rows)")
+
+    fig, ax = plt.subplots(figsize=(10, 9))
+    ax.imshow(frames[0], cmap="gray")
+
+    unique_ids = output["nucleus_id"].unique() if not output.empty else []
+    color_map = plt.cm.tab20(np.linspace(0, 1, len(unique_ids))) if len(unique_ids) else []
+
+    for nucleus_id, color in zip(unique_ids, color_map):
+        traj = output[output["nucleus_id"] == nucleus_id].sort_values("frame")
+        ax.plot(traj["x"], traj["y"], "-o", color=color, markersize=3, linewidth=1.2)
+
+    ax.set_title(
+        f"Nucleus trajectories — seq. {data_dir.name}, frames 0-{n_frames - 1}\n"
+        f"{n_kept} trajectories over {len(unique_ids)} tracked nuclei",
+        fontsize=11,
+    )
+    ax.set_xlabel("x (pixels)")
+    ax.set_ylabel("y (pixels)")
+    plt.tight_layout()
+    plt.savefig(viz_image, dpi=150)
+    plt.close()
+    print(f"  Saved plot: {viz_image}")
+
+    # SUMMARY
+    avg_len = 0.0 if output.empty else output.groupby("nucleus_id").size().mean()
+    total_nuclei_detected = len(detections)
+
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"  Frames processed        : {n_frames}")
+    print(f"  Total nuclei detected   : {total_nuclei_detected}  (sum across all frames)")
+    print(f"  Raw trajectories linked : {n_raw}")
+    print(f"  Trajectories kept       : {n_kept}  (>= {MIN_FRAMES} frames long)")
+    print(f"  Average track length    : {avg_len:.1f} frames")
+    print(f"\n  Trajectory CSV : {traj_csv}")
+    print(f"  Visualisation  : {viz_image}")
+
+
+if __name__ == "__main__":
+    main()
