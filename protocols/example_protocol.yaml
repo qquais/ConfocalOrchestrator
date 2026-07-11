@@ -1,20 +1,37 @@
 # ConfocalOrchestrator - Example Acquisition Protocol
 # This file defines the parameters for an automated imaging run
 # on the Nikon AX confocal microscope with N-SPARC detector.
+#
+# Values below were provided by the biology team (Mike Bechill Biofilm Group).
+# Any field marked "TODO" is still a placeholder - confirm the real value with
+# the biology team before using this protocol to actually drive the microscope.
 
 protocol:
-  name: "physarum_timelapse_example"
-  description: "Example time-lapse protocol for Physarum polycephalum nuclear tracking"
+  name: "biofilm_group_60xoil_timelapse"
+  description: "6-hour continuous time-lapse, 60x oil objective, N-SPARC CF mode, 3-slice z-stack"
   created_by: "Qurratul Ain Quais"
-  version: "0.1"
+  version: "0.2"
 
 # --- MICROSCOPE OBJECTIVE ---
+# The "objective" is the lens closest to the sample. Higher magnification lets you
+# see finer detail but shrinks the field of view. "Oil immersion" means a drop of
+# oil is used between the lens and the sample slide to improve image sharpness.
 objective:
-  magnification: 10        # 4x, 10x, or 60x available
-  name: "Plan APO 10x"
+  magnification: 60        # 60x = high magnification
+  name: "60x Oil"           # matches the "60XOIL" tag in the filename convention below
+  immersion: "oil"          # oil immersion objective (vs. air/water)
+
+# --- N-SPARC DETECTOR SETTINGS ---
+# N-SPARC is Nikon's high-speed confocal detector unit. It supports different
+# scanning "modes" that balance imaging speed against resolution/sensitivity.
+detector:
+  n_sparc_mode: "CF Mode"  # mode requested by the biology team; matches "S9CAI" tag in filenames
+  # TODO: confirm with biology team exactly what "S9CAI" stands for, so this stays documented correctly.
 
 # --- STAGE POSITIONS ---
-# Multiple positions can be defined for multi-site imaging
+# A "position" is one XY (and Z) location on the sample that the microscope will
+# visit and image. Defining multiple positions lets one run image several spots.
+# TODO: confirm real stage coordinates for this biofilm sample with the biology team.
 positions:
   - id: 1
     label: "sample_center"
@@ -23,29 +40,70 @@ positions:
     z: 0.0
 
 # --- Z-STACK SETTINGS ---
+# A "z-stack" takes several images at slightly different focus depths (slices)
+# so you can see structure through the thickness (depth) of the sample, not just
+# one flat plane.
 z_stack:
-  enabled: true
-  z_start: -5.0            # microns relative to focus
-  z_end: 5.0
-  z_step: 1.0              # step size in microns
+  enabled: true             # biology team confirmed z-stacking is turned on
+  num_slices: 3             # 3 slices per stack - matches the "3" in the filename convention below
+  z_start: -1.0             # TODO: confirm real focus range with biology team (placeholder for a 3-slice stack)
+  z_end: 1.0
+  z_step: 1.0                # distance in microns between each slice
+
+# --- CAMERA / SCAN RESOLUTION ---
+# Resolution is how many pixels are captured per image. Higher resolution shows
+# more detail but takes longer to scan and produces larger files.
+resolution:
+  width_px: 1024
+  height_px: 1024
 
 # --- CHANNELS ---
-# Determined before imaging based on dye or fluorescent protein used
+# Each "channel" pairs one laser with one detector to excite and capture light
+# from a specific fluorescent dye or protein. The biology team confirmed these
+# four lasers are used; the dye names/power/exposure below are placeholders.
+# TODO: confirm dye/fluorophore name, laser power (%), and exposure time (ms) per channel.
 channels:
   - id: 0
-    name: "DAPI"           # example fluorescent dye for nuclei
-    laser_wavelength: 405  # in nm
-    laser_power: 5.0       # percentage
-    exposure_ms: 100       # milliseconds
+    name: "Channel 405"      # TODO: replace with actual dye name (e.g. DAPI) once known
+    laser_wavelength: 405     # in nm
+    laser_power: 5.0          # TODO: confirm; percentage of maximum laser power
+    exposure_ms: 100          # TODO: confirm; how long the detector collects light per frame
+  - id: 1
+    name: "Channel 488"
+    laser_wavelength: 488
+    laser_power: 5.0
+    exposure_ms: 100
+  - id: 2
+    name: "Channel 561"
+    laser_wavelength: 561
+    laser_power: 5.0
+    exposure_ms: 100
+  - id: 3
+    name: "Channel 640"
+    laser_wavelength: 640
+    laser_power: 5.0
+    exposure_ms: 100
 
 # --- TIME-LAPSE SETTINGS ---
+# A time-lapse repeats the imaging cycle over time so you can watch the sample
+# change (e.g. biofilm growth) instead of capturing just one moment.
 timelapse:
-  interval_minutes: 10     # time between each acquisition cycle
-  duration_hours: 24       # total run duration (up to 96 hrs / 4 days)
-  total_timepoints: 144    # auto calculated: duration*60 / interval
+  interval_minutes: 0        # 0 = "No Delay": start the next cycle right after the previous one finishes (continuous imaging)
+  duration_hours: 6          # total length of the run
+  total_timepoints: null     # not fixed ahead of time - with no delay, the number of cycles depends on how long each cycle actually takes
 
 # --- OUTPUT SETTINGS ---
 output:
-  save_directory: "D:/ExperimentData/"   # 8TB data drive on microscope PC
-  filename_prefix: "physarum_run01"
-  format: "nd2"                          # native NIS-Elements format
+  save_directory: "D:\\Mike Bechill Biofilm Group\\"   # Windows path on the microscope PC (each "\\" is one literal backslash in YAML)
+  format: "nd2"                                          # ND2 = Nikon's native file format, readable by NIS-Elements and Bio-Formats/ImageJ
+  # Filename convention used by the biology team for every saved file:
+  #   YYYY.MM.DD.AB.Z.3.S.C.60XOIL.S9CAI.nd2
+  #     YYYY.MM.DD -> date the acquisition started
+  #     AB         -> TODO confirm with biology team (likely sample/experiment initials or ID)
+  #     Z          -> flags that this file is a z-stack
+  #     3          -> number of z-slices (matches z_stack.num_slices above)
+  #     S          -> stage/sample position number (matches positions[].id above)
+  #     C          -> channel number (matches channels[].id above)
+  #     60XOIL     -> objective used (matches objective.name above)
+  #     S9CAI      -> N-SPARC mode/detector tag (matches detector.n_sparc_mode above)
+  filename_convention: "YYYY.MM.DD.AB.Z.3.S.C.60XOIL.S9CAI.nd2"

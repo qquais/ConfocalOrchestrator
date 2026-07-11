@@ -12,19 +12,23 @@ cellpose
 # --- OME-TIFF conversion (active) ---
 tifffile
 
+# --- Acquisition (active) ---
+PyYAML
+fastapi
+uvicorn
+
 # --- Acquisition (future) ---
-# PyYAML
 # aicsimageio
-# fastapi
-# uvicorn
+
+# --- Image Processing & Analysis (active) ---
+scikit-image
+trackpy
+pandas
+matplotlib
+pytz
 
 # --- Image Processing & Analysis (future) ---
 # opencv-python
-# scikit-image
-# cellpose
-# trackpy
-# pandas
-# matplotlib
 
 # --- Dev / Testing ---
 # pytest
