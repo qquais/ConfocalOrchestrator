@@ -85,7 +85,7 @@ def main() -> None:
     n_frames = args.frames
 
     traj_csv = output_dir / "trajectories.csv"
-    viz_image = output_dir / "trajectories.png"
+    viz_image = output_dir / "trajectories_visual.png"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,23 +205,68 @@ def main() -> None:
     output.to_csv(traj_csv, index=False)
     print(f"  Saved CSV : {traj_csv}  ({len(output)} rows)")
 
-    fig, ax = plt.subplots(figsize=(10, 9))
+    fig, ax = plt.subplots(figsize=(16, 12))
     ax.imshow(frames[0], cmap="gray")
 
     unique_ids = output["nucleus_id"].unique() if not output.empty else []
-    color_map = plt.cm.tab20(np.linspace(0, 1, len(unique_ids))) if len(unique_ids) else []
+    color_map = plt.cm.rainbow(np.linspace(0, 1, len(unique_ids))) if len(unique_ids) else []
+
+    start_handle = None
+    end_handle = None
 
     for nucleus_id, color in zip(unique_ids, color_map):
         traj = output[output["nucleus_id"] == nucleus_id].sort_values("frame")
-        ax.plot(traj["x"], traj["y"], "-o", color=color, markersize=3, linewidth=1.2)
+        ax.plot(traj["x"], traj["y"], color=color, linewidth=3.0, alpha=0.95)
 
-    ax.set_title(
-        f"Nucleus trajectories — seq. {data_dir.name}, frames 0-{n_frames - 1}\n"
-        f"{n_kept} trajectories over {len(unique_ids)} tracked nuclei",
-        fontsize=11,
-    )
+        start_point = traj.iloc[0]
+        end_point = traj.iloc[-1]
+
+        start_handle = ax.scatter(
+            start_point["x"],
+            start_point["y"],
+            s=90,
+            color="lime",
+            edgecolors="white",
+            linewidths=1.0,
+            zorder=6,
+        )
+        end_handle = ax.scatter(
+            end_point["x"],
+            end_point["y"],
+            s=90,
+            color="red",
+            edgecolors="white",
+            linewidths=1.0,
+            zorder=6,
+        )
+
+        label_x = end_point["x"] + 6
+        label_y = end_point["y"] - 6
+        ax.text(
+            label_x,
+            label_y,
+            str(int(nucleus_id)),
+            color=color,
+            fontsize=10,
+            weight="bold",
+            ha="left",
+            va="bottom",
+            bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none", "pad": 1.5},
+            zorder=7,
+        )
+
+    ax.set_title("30 Nuclei Tracked Across 10 Frames", fontsize=18, weight="bold")
     ax.set_xlabel("x (pixels)")
     ax.set_ylabel("y (pixels)")
+    if start_handle is not None and end_handle is not None:
+        ax.legend(
+            handles=[start_handle, end_handle],
+            labels=["Start", "End"],
+            loc="upper right",
+            frameon=True,
+        )
+    ax.set_facecolor("black")
+    ax.set_axisbelow(True)
     plt.tight_layout()
     plt.savefig(viz_image, dpi=150)
     plt.close()
@@ -245,3 +290,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
