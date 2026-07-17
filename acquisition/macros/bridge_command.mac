@@ -1,0 +1,137 @@
+// bridge_command.mac
+// ------------------------------------------------------------
+// Native NIS-Elements macro bridge for ConfocalOrchestrator.
+//
+// Purpose: lets acquisition/nis_bridge.py (plain Python, running on this
+// SAME PC) get real stage data out of NIS-Elements today, using NIS's own
+// native macro language and the confirmed Stg_ stage functions - instead
+// of waiting on Ti2 SDK approval from Nikon. See acquisition/nis_mock.py
+// and acquisition/nis_bridge.py's module docstrings for the other two
+// backends (mock / future sdk) this sits alongside.
+//
+// Protocol - two files, in a "bridge_data" folder next to this repo's
+// acquisition/ directory (see acquisition/macros/README.md for the exact
+// expected path, and confirm/adjust FOLDER below to match):
+//   command.txt   <- Python writes ONE command here, e.g.:
+//                       GET_POS
+//                     or, for a move (line 1 = command, line 2 = "x,y"):
+//                       MOVE_XY
+//                       12345.6,7890.1
+//   response.txt  <- this macro writes "<status>,<x>,<y>,<z>" here after
+//                     handling the command. Python deletes it once read.
+//   command.txt is deleted by this macro immediately after reading it, so
+//   the same command can't accidentally re-trigger on the next loop pass.
+//
+// >>> HOW TO RUN: inside NIS-Elements, Macro menu -> Run Macro From
+// >>> File... -> select this file. It loops forever (polling on a timer),
+// >>> so it keeps running until you explicitly stop it from NIS's
+// >>> macro/run controls - stop it there when you're done testing, don't
+// >>> just close the editor window.
+//
+// >>> IMPORTANT / UNVERIFIED - PLEASE CHECK BEFORE RELYING ON THIS:
+// >>> The Stg_ function calls and status codes below (StgGetPos,
+// >>> StgMoveXY, DR_OK=1, DR_PARTIALLYOK=2, DR_NOTAVAILABLE=-4,
+// >>> DR_NOTCALIBRATED=-6, DR_NOTINITIALIZED=-7, DR_UNKNOWNERROR=-1) are
+// >>> the ones you confirmed and can be trusted as written.
+// >>>
+// >>> The plain-text FILE I/O calls (FileExists, FileReadText,
+// >>> FileWriteText, FileDelete), the string-splitting helpers
+// >>> (GetLine, GetToken, StrToDouble, IntToStr, DoubleToStr), and the
+// >>> polling delay (Wait) are NOT confirmed against this NIS-Elements
+// >>> install's real Macro Language Reference - they're written using the
+// >>> most common naming convention for this kind of macro function, as a
+// >>> starting structure, not a guarantee they exist under these exact
+// >>> names/signatures. Before running this for real:
+// >>>   1. Open the Macro editor's built-in function list/autocomplete
+// >>>      (or Help -> Macro Language Reference) inside NIS-Elements.
+// >>>   2. Search for "file" (read/write/exists/delete a text file) and
+// >>>      "wait"/"sleep" (pause for N ms) to find the real function
+// >>>      names and exact signatures.
+// >>>   3. Swap the real names into the marked lines below.
+// ------------------------------------------------------------
+
+BSTR FOLDER = "bridge_data\\";
+BSTR COMMAND_FILE = FOLDER + "command.txt";
+BSTR RESPONSE_FILE = FOLDER + "response.txt";
+
+Int keep_running;
+keep_running = 1;
+
+while (keep_running == 1)
+{
+	// ── 1. Wait for Python to drop a command file ──────────────────────
+	// UNVERIFIED: confirm FileExists() is the real built-in name/signature.
+	if (FileExists(COMMAND_FILE) == 1)
+	{
+		BSTR contents;
+		// UNVERIFIED: confirm FileReadText() (or equivalent) reads a
+		// whole text file into a single string.
+		contents = FileReadText(COMMAND_FILE);
+
+		// ── 2. Delete command.txt immediately so it can't re-trigger ───
+		// UNVERIFIED: confirm FileDelete() is the real built-in name.
+		FileDelete(COMMAND_FILE);
+
+		// ── 3. Split into lines and read the command word ─────────────
+		// UNVERIFIED: GetLine(text, index) as a "get line N" helper is a
+		// placeholder - confirm the real string-splitting function(s)
+		// this macro language provides.
+		BSTR command_word;
+		command_word = GetLine(contents, 0);
+
+		Double x, y, z;
+		Int status;
+		x = 0.0;
+		y = 0.0;
+		z = 0.0;
+
+		if (command_word == "GET_POS")
+		{
+			// ── 4a. Read the real stage position ───────────────────────
+			status = StgGetPos(&x, &y, &z);
+		}
+		else if (command_word == "MOVE_XY")
+		{
+			// ── 4b. Parse "x,y" from line 2 and move ────────────────────
+			// Safety note: this macro does NOT decide whether a move is
+			// safe to perform - it trusts that nis_bridge.py only ever
+			// sends MOVE_XY after its own move_xy(confirm=True) gate has
+			// already been passed by the caller. Do not add any other
+			// path that calls StgMoveXY from this macro.
+			BSTR xy_line;
+			xy_line = GetLine(contents, 1);
+
+			// UNVERIFIED: confirm the real token-split + string-to-double
+			// helpers (GetToken / StrToDouble here are placeholders).
+			x = StrToDouble(GetToken(xy_line, ",", 0));
+			y = StrToDouble(GetToken(xy_line, ",", 1));
+
+			status = StgMoveXY(x, y);
+
+			// Read back the position after the move, so the response
+			// always reports where the stage actually ended up rather
+			// than just echoing the requested target.
+			if (status == 1 || status == 2)	// DR_OK or DR_PARTIALLYOK
+			{
+				status = StgGetPos(&x, &y, &z);
+			}
+		}
+		else
+		{
+			status = -1;	// DR_UNKNOWNERROR - unrecognized command word
+		}
+
+		// ── 5. Write the response for Python to pick up ────────────────
+		BSTR response;
+		// UNVERIFIED: confirm IntToStr()/DoubleToStr() (or equivalents)
+		// for formatting numbers into a string.
+		response = IntToStr(status) + "," + DoubleToStr(x) + "," + DoubleToStr(y) + "," + DoubleToStr(z);
+		// UNVERIFIED: confirm FileWriteText() overwrites (not appends).
+		FileWriteText(RESPONSE_FILE, response);
+	}
+
+	// ── 6. Brief pause before checking again ───────────────────────────
+	// UNVERIFIED: confirm Wait() is the real built-in and whether it
+	// takes milliseconds or seconds - adjust the value below accordingly.
+	Wait(200);
+}

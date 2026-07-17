@@ -34,6 +34,19 @@ except ImportError:
 
 POSITIONS_FILE = Path(__file__).resolve().parent.parent / "protocols" / "stage_positions.json"
 
+# ── Backend design ────────────────────────────────────────────────────────
+# StagePositionManager can drive the stage through any of three backends,
+# selected via the `backend` constructor parameter, all kept long-term
+# side by side rather than replacing one with another:
+#   - "mock"   -> nis_mock.MockNIS (or the real `nis` module, if this
+#                 happens to be running on the microscope PC) - unchanged
+#                 default, for offline development with no hardware.
+#   - "bridge" -> nis_bridge.NISBridge - talks to REAL NIS-Elements stage
+#                 hardware today via NIS's native macro language, while
+#                 the Ti2 SDK is still awaiting Nikon's approval.
+#   - "sdk"    -> reserved for the future Ti2 SDK backend, once approved;
+#                 raises NotImplementedError until then.
+
 
 def to_plain_float(value) -> float:
     """Convert a numpy scalar (or anything float-like) to a plain Python float.
@@ -52,8 +65,34 @@ class StagePositionManager:
     the same XY_GetPosition/XY_Move/Z_GetPosition/Z_Move methods.
     """
 
-    def __init__(self, nis_module=nis, positions_file: Path = POSITIONS_FILE):
-        self._nis = nis_module
+    def __init__(self, backend: str = "mock", nis_module=None, positions_file: Path = POSITIONS_FILE):
+        """
+        backend: "mock" (default - unchanged offline-dev behavior via the
+            module-level `nis`, which is either the real `nis` module or
+            MockNIS depending on what was importable), "bridge" (real
+            hardware today via nis_bridge.NISBridge), or "sdk" (reserved,
+            not implemented yet).
+        nis_module: explicit override, mainly for tests - if given, used
+            as-is regardless of `backend`.
+        """
+        if nis_module is not None:
+            self._nis = nis_module
+        elif backend == "mock":
+            self._nis = nis
+        elif backend == "bridge":
+            from nis_bridge import NISBridge
+            self._nis = NISBridge()
+        elif backend == "sdk":
+            # Reserved for the future Ti2 SDK backend, once Nikon approves
+            # SDK access - see docs/microscope-notes.md's "SDK Status".
+            raise NotImplementedError(
+                "The 'sdk' backend is reserved for the future Ti2 SDK "
+                "integration and isn't implemented yet. Use 'bridge' for "
+                "real hardware today, or 'mock' for offline development."
+            )
+        else:
+            raise ValueError(f"Unknown backend '{backend}'. Expected 'mock', 'bridge', or 'sdk'.")
+
         self._positions_file = positions_file
         self._positions = self._load()
 
