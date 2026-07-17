@@ -16,6 +16,7 @@
 # ------------------------------------------------------------
 
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,13 @@ from PIL import Image
 # converted from mm to microns to match the units used by the NIS API.
 X_LIMIT_UM = 57_000.0
 Y_LIMIT_UM = 36_500.0
+
+# Realistic movement delay for XY_Move, based on the Ti2-E's documented max
+# XY stage speed (docs/microscope-notes.md: "Max speed: 25mm/sec"). The
+# focus (Z) drive's speed isn't documented, so Z_Move uses a small fixed
+# placeholder delay instead of a physics-based one.
+XY_MAX_SPEED_UM_PER_SEC = 25_000.0
+Z_MOVE_DELAY_SEC = 0.05
 
 # Sample frame copied by capture() to simulate a real image capture. Falls
 # back to a generated placeholder if this isn't present - data/ is
@@ -88,28 +96,46 @@ class MockNIS:
         return float(self._x), float(self._y)
 
     def XY_Move(self, x: float, y: float) -> None:
-        """Move the stage to an absolute (x, y) position in microns."""
+        """Move the stage to an absolute (x, y) position in microns.
+
+        Logs the move and sleeps for a distance-proportional delay based on
+        the Ti2-E's documented max stage speed (25mm/sec), so timing in
+        code developed against this mock is at least roughly realistic.
+        """
         x, y = float(x), float(y)
         self._check_xy_limits(x, y)
+        distance_um = ((x - self._x) ** 2 + (y - self._y) ** 2) ** 0.5
+        delay_sec = distance_um / XY_MAX_SPEED_UM_PER_SEC
+        print(
+            f"[MockNIS] XY_Move: ({self._x:.2f}, {self._y:.2f}) -> "
+            f"({x:.2f}, {y:.2f}) um (simulated {delay_sec:.3f}s)"
+        )
+        time.sleep(delay_sec)
         self._x, self._y = x, y
 
     def XY_MoveRelative(self, dx: float, dy: float) -> None:
         """Move the stage by (dx, dy) microns relative to its current position."""
-        x, y = self._x + float(dx), self._y + float(dy)
-        self._check_xy_limits(x, y)
-        self._x, self._y = x, y
+        self.XY_Move(self._x + float(dx), self._y + float(dy))
 
     def Z_GetPosition(self) -> float:
         """Return the current focus (z) position in microns."""
         return float(self._z)
 
     def Z_Move(self, z: float) -> None:
-        """Move focus to an absolute z position in microns."""
-        self._z = float(z)
+        """Move focus to an absolute z position in microns.
+
+        Logs the move and sleeps for a small fixed delay (Z_MOVE_DELAY_SEC) -
+        the real focus-drive speed isn't documented, so this is a
+        placeholder rather than a physics-based figure like XY_Move's.
+        """
+        z = float(z)
+        print(f"[MockNIS] Z_Move: {self._z:.2f} -> {z:.2f} um (simulated {Z_MOVE_DELAY_SEC:.3f}s)")
+        time.sleep(Z_MOVE_DELAY_SEC)
+        self._z = z
 
     def Z_MoveRelative(self, dz: float) -> None:
         """Move focus by dz microns relative to its current position."""
-        self._z += float(dz)
+        self.Z_Move(self._z + float(dz))
 
     def shouldAbort(self) -> bool:
         """Return whether the user has clicked abort in the NIS UI.

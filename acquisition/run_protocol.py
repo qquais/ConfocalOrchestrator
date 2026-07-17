@@ -5,16 +5,19 @@
 # for every time point, visit every XY position, step through the z-stack
 # at that position, and capture every channel at each z-slice.
 #
-# >>> Run this script ON the microscope PC, with NIS-Elements AR 6.20.02
-# >>> already open. The `nis` module (and the job `ctx` context object used
-# >>> for abort checks) are provided by NIS-Elements itself and do not exist
-# >>> anywhere else, so this script cannot run standalone on a dev laptop
-# >>> (Mac/Linux/plain Windows Python) - it will only import successfully
-# >>> inside that environment. Running it on a Mac will fail at the
-# >>> `import nis` line below - that is expected.
+# >>> Run this ON the microscope PC, with NIS-Elements AR 6.20.02 already
+# >>> open, to drive the real stage. The `nis` module (and the job `ctx`
+# >>> context object used for abort checks) are provided by NIS-Elements
+# >>> itself and only exist in that environment.
+# >>>
+# >>> Off the microscope PC (Mac/Linux/plain Windows Python), this falls
+# >>> back to acquisition/nis_mock.py's MockNIS - same method names/
+# >>> signatures as the real API - so the whole loop below (load protocol,
+# >>> visit positions, step the z-stack, "capture" each channel) can be
+# >>> developed and tested without needing Remote Desktop access to the
+# >>> real microscope. See nis_mock.py's module docstring.
 #
-# Run (on the microscope PC, from the NIS-Elements Python console or a
-# terminal with the NIS-Elements Python environment active):
+# Run:
 #   python run_protocol.py
 # ------------------------------------------------------------
 
@@ -28,17 +31,7 @@ import yaml  # PyYAML - reads the .yaml protocol file into a Python dict
 
 import dashboard  # this repo's acquisition/dashboard.py - shared status dict + web UI
 
-# ── 1. Connect to the NIS-Elements Python API ────────────────────────────────
-try:
-    import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
-except ImportError as e:
-    raise SystemExit(
-        "Could not import the 'nis' module.\n"
-        "This script must be run ON the microscope PC, with NIS-Elements "
-        "AR 6.20.02 already open, so its Python API is available.\n"
-        f"Original error: {e}"
-    )
-
+# ── 1. Connect to the NIS-Elements Python API, or fall back to the mock ─────
 # `ctx` is the job-context object NIS-Elements provides while a script runs
 # as a Job; ctx.shouldAbort() reports whether the user clicked the Abort
 # button in NIS-Elements.
@@ -46,9 +39,16 @@ except ImportError as e:
 # it may need to come from `nis` itself (e.g. `ctx = nis.ctx`) rather than
 # a top-level `ctx` module. Not confirmed yet, so this is a placeholder.
 try:
+    import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
     from nis import ctx
 except ImportError:
-    ctx = None
+    from nis_mock import MockNIS
+    nis = MockNIS()
+    ctx = nis.ctx
+    print(
+        "'nis' module not found - using MockNIS (offline/dev mode). "
+        "This will not move a real stage or capture real images."
+    )
 
 # Path to the protocol file, relative to this script - matches the existing
 # acquisition/ + protocols/ folder layout.
@@ -72,10 +72,11 @@ def should_abort() -> bool:
     dashboard.acquisition_status["abort_requested"] = True). Either one stops
     the run at the next check.
 
-    ctx.shouldAbort() falls back to "never abort" if `ctx` isn't available
-    (e.g. while reading or testing this script off the microscope PC).
+    `ctx` always resolves to something with .shouldAbort() - the real
+    NIS-Elements job context on the microscope PC, or MockNIS's mock
+    context (always False) everywhere else.
     """
-    nis_abort = ctx.shouldAbort() if ctx is not None else False
+    nis_abort = ctx.shouldAbort()
     dashboard_abort = dashboard.acquisition_status["abort_requested"]
     return nis_abort or dashboard_abort
 

@@ -17,6 +17,8 @@
 import json
 from pathlib import Path
 
+import yaml  # PyYAML - reads a protocol file's `positions:` list
+
 # Stage travel limits (see nis_mock.py / docs/microscope-notes.md's hardware
 # spec) - imported unconditionally since nis_mock.py has no hardware
 # dependency of its own, so these constants are always available regardless
@@ -133,6 +135,54 @@ class StagePositionManager:
         with open(self._positions_file, "w") as f:
             json.dump(self._positions, f, indent=2, sort_keys=True)
 
+    def define_position(self, label: str, x: float, y: float, z: float) -> dict:
+        """Manually define a named position from explicit (x, y, z)
+        coordinates in microns - e.g. from a protocol file - without
+        needing to physically move the stage there first (unlike
+        save_current(), which reads the stage's current live position).
+
+        Raises ValueError if (x, y) is outside the stage's travel limits.
+        Overwrites any existing position already saved under `label`.
+        """
+        x, y, z = to_plain_float(x), to_plain_float(y), to_plain_float(z)
+        validate_position(x, y)
+        position = {"x": x, "y": y, "z": z}
+        self._positions[label] = position
+        self._save()
+        return position
+
+    def load_positions_from_yaml(self, yaml_path: Path) -> dict:
+        """Load the `positions:` list from a protocol YAML file (see
+        protocols/example_protocol.yaml) and define each one by its
+        `label`, validating each against the stage's travel limits.
+
+        Returns the newly-defined positions as {label: {"x", "y", "z"}}.
+        Existing saved positions sharing a label are overwritten.
+        """
+        with open(yaml_path, "r") as f:
+            protocol = yaml.safe_load(f)
+
+        loaded = {}
+        for entry in protocol["positions"]:
+            loaded[entry["label"]] = self.define_position(
+                entry["label"], entry["x"], entry["y"], entry["z"]
+            )
+        return loaded
+
+    def print_summary(self) -> None:
+        """Print a simple table of all saved positions (label, x, y, z)."""
+        positions = self.list_positions()
+        if not positions:
+            print("No saved positions.")
+            return
+
+        label_width = max(len("label"), max(len(label) for label in positions))
+        header = f"{'label':<{label_width}}  {'x (um)':>12}  {'y (um)':>12}  {'z (um)':>12}"
+        print(header)
+        print("-" * len(header))
+        for label, pos in sorted(positions.items()):
+            print(f"{label:<{label_width}}  {pos['x']:>12.2f}  {pos['y']:>12.2f}  {pos['z']:>12.2f}")
+
     def save_current(self, label: str) -> dict:
         """Read the stage's current position and save it under `label`.
 
@@ -196,3 +246,10 @@ if __name__ == "__main__":
     print("  Stage now at:", nis.XY_GetPosition(), nis.Z_GetPosition())
 
     print(f"\nPositions saved to: {POSITIONS_FILE}")
+
+    protocol_path = Path(__file__).resolve().parent.parent / "protocols" / "example_protocol.yaml"
+    print(f"\nLoading positions from {protocol_path}...")
+    print(" ", manager.load_positions_from_yaml(protocol_path))
+
+    print("\nSummary of all saved positions:")
+    manager.print_summary()
