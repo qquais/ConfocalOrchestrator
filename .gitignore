@@ -43,5 +43,8 @@ output/
 
 docs/proposal.md
 
+# NIS bridge IPC files (transient, machine-local - see acquisition/nis_bridge.py)
+acquisition/bridge_data/
+
 # Logs
 *.log
