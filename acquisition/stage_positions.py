@@ -17,6 +17,12 @@
 import json
 from pathlib import Path
 
+# Stage travel limits (see nis_mock.py / docs/microscope-notes.md's hardware
+# spec) - imported unconditionally since nis_mock.py has no hardware
+# dependency of its own, so these constants are always available regardless
+# of whether the real `nis` module or MockNIS ends up being used below.
+from nis_mock import X_LIMIT_UM, Y_LIMIT_UM
+
 # ── 1. Connect to the NIS-Elements Python API, or fall back to the mock ─────
 # Unlike nis_connection.py / run_protocol.py (which only ever run ON the
 # microscope PC and hard-fail without the real API), this module is meant
@@ -54,6 +60,26 @@ def to_plain_float(value) -> float:
     NIS-Elements functions expect plain Python numbers, not numpy types.
     """
     return float(value)
+
+
+def validate_position(x: float, y: float) -> None:
+    """Raise ValueError if (x, y) - in microns - is outside the Ti2-E's
+    stage travel limits (X +/-57mm, Y +/-36.5mm - see nis_mock.X_LIMIT_UM /
+    Y_LIMIT_UM, sourced from docs/microscope-notes.md's hardware spec).
+
+    Called before a position is saved (save_current) or moved to (go_to),
+    so a bad reading or a hand-edited positions file can't silently send
+    the stage past its travel limits.
+    """
+    x, y = to_plain_float(x), to_plain_float(y)
+    if not -X_LIMIT_UM <= x <= X_LIMIT_UM:
+        raise ValueError(
+            f"X position {x:.2f} um is outside the stage travel limit of +/-{X_LIMIT_UM:.0f} um."
+        )
+    if not -Y_LIMIT_UM <= y <= Y_LIMIT_UM:
+        raise ValueError(
+            f"Y position {y:.2f} um is outside the stage travel limit of +/-{Y_LIMIT_UM:.0f} um."
+        )
 
 
 class StagePositionManager:
@@ -108,9 +134,15 @@ class StagePositionManager:
             json.dump(self._positions, f, indent=2, sort_keys=True)
 
     def save_current(self, label: str) -> dict:
-        """Read the stage's current position and save it under `label`."""
+        """Read the stage's current position and save it under `label`.
+
+        Raises ValueError if the reported position is outside the stage's
+        travel limits (see validate_position) - a defensive check, since
+        this should never happen for a real, correctly-reporting stage.
+        """
         x, y = self._nis.XY_GetPosition()
         z = self._nis.Z_GetPosition()
+        validate_position(x, y)
         position = {"x": to_plain_float(x), "y": to_plain_float(y), "z": to_plain_float(z)}
         self._positions[label] = position
         self._save()
@@ -123,14 +155,17 @@ class StagePositionManager:
     def go_to(self, label: str) -> dict:
         """Move the stage to the saved position under `label`.
 
-        Raises KeyError if no position with that label has been saved.
-        Callers driving real hardware (not MockNIS) should confirm with the
-        user before calling this - the same way nis_connection.py and
-        run_protocol.py confirm before any stage move.
+        Raises KeyError if no position with that label has been saved, or
+        ValueError if the saved position is outside the stage's travel
+        limits (see validate_position) - e.g. from a hand-edited positions
+        file. Callers driving real hardware (not MockNIS) should confirm
+        with the user before calling this - the same way nis_connection.py
+        and run_protocol.py confirm before any stage move.
         """
         if label not in self._positions:
             raise KeyError(f"No saved position named '{label}'. Known positions: {list(self._positions)}")
         position = self._positions[label]
+        validate_position(position["x"], position["y"])
         self._nis.XY_Move(position["x"], position["y"])
         self._nis.Z_Move(position["z"])
         return position

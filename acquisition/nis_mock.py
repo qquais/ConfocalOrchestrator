@@ -15,10 +15,33 @@
 #   nis = MockNIS()
 # ------------------------------------------------------------
 
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+from PIL import Image
+
 # Stage travel limits from the Nikon Ti2-E spec (see docs/microscope-notes.md),
 # converted from mm to microns to match the units used by the NIS API.
 X_LIMIT_UM = 57_000.0
 Y_LIMIT_UM = 36_500.0
+
+# Sample frame copied by capture() to simulate a real image capture. Falls
+# back to a generated placeholder if this isn't present - data/ is
+# gitignored, so a fresh clone of the repo won't have it until fetched.
+SAMPLE_FRAME_PATH = Path(__file__).resolve().parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
+CAPTURE_DIR = Path(__file__).resolve().parent.parent / "data" / "captures"
+
+
+class _MockContext:
+    """Mock of the NIS-Elements Jobs 'ctx' context object - only the
+    abort-check method ConfocalOrchestrator actually uses (see
+    run_protocol.py's should_abort(), which calls ctx.shouldAbort()).
+    Always reports False - there is no UI to click Abort from in the mock.
+    """
+
+    def shouldAbort(self) -> bool:
+        return False
 
 
 class MockNIS:
@@ -28,12 +51,25 @@ class MockNIS:
     and signatures of the real `nis` module used on the microscope PC.
     No delays, noise, or simulated hardware errors - just state tracking,
     for offline development and testing of ConfocalOrchestrator.
+
+    Also exposes capture() (simulated image capture) and .ctx.shouldAbort()
+    (mock Jobs context), for parity with the rest of the real API surface
+    ConfocalOrchestrator's acquisition scripts use - see run_protocol.py.
+
+    NOTE on capture(): unlike XY_Move/Z_Move/XY_GetPosition/Z_GetPosition
+    (all confirmed against docs/microscope-notes.md's documented API),
+    the real capture function's name and signature are NOT confirmed yet -
+    run_protocol.py's capture_image() flags this as a TODO and guesses
+    `nis.Capture()` as a placeholder. `capture()` here is written to match
+    this project's explicit spec for the mock, not a confirmed real
+    signature - expect to rename/adjust it once the real one is confirmed.
     """
 
     def __init__(self, x: float = 0.0, y: float = 0.0, z: float = 0.0):
         self._x = float(x)
         self._y = float(y)
         self._z = float(z)
+        self.ctx = _MockContext()
 
     def _check_xy_limits(self, x: float, y: float) -> None:
         if not -X_LIMIT_UM <= x <= X_LIMIT_UM:
@@ -78,9 +114,32 @@ class MockNIS:
     def shouldAbort(self) -> bool:
         """Return whether the user has clicked abort in the NIS UI.
 
-        Always False in the mock - there is no UI to abort from.
+        Always False in the mock - there is no UI to abort from. Kept
+        alongside .ctx.shouldAbort() (same behavior) since this method
+        already existed and other code may call it directly.
         """
         return False
+
+    def capture(self) -> Path:
+        """Simulate taking a frame: copy a sample frame to a new file with
+        a timestamp in the name (e.g. capture_20260717_143022.png), and
+        return its Path. Stands in for the real NIS-Elements image-capture
+        call (see the docstring above re: capture()'s unconfirmed real
+        signature).
+
+        Falls back to generating a plain placeholder PNG if
+        SAMPLE_FRAME_PATH isn't present on this machine.
+        """
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = CAPTURE_DIR / f"capture_{timestamp}.png"
+
+        if SAMPLE_FRAME_PATH.exists():
+            shutil.copy(SAMPLE_FRAME_PATH, dest)
+        else:
+            Image.new("RGB", (256, 256), color=(80, 80, 80)).save(dest)
+
+        return dest
 
 
 if __name__ == "__main__":
@@ -97,6 +156,10 @@ if __name__ == "__main__":
     print("After relative move:", nis.XY_GetPosition(), nis.Z_GetPosition())
 
     print("shouldAbort():", nis.shouldAbort())
+    print("ctx.shouldAbort():", nis.ctx.shouldAbort())
+
+    captured_path = nis.capture()
+    print("capture() wrote:", captured_path)
 
     try:
         nis.XY_Move(60_000.0, 0.0)
