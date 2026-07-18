@@ -28,74 +28,98 @@
 // >>> macro/run controls - stop it there when you're done testing, don't
 // >>> just close the editor window.
 //
-// >>> IMPORTANT / UNVERIFIED - PLEASE CHECK BEFORE RELYING ON THIS:
-// >>> The Stg_ function calls and status codes below (StgGetPos,
-// >>> StgMoveXY, DR_OK=1, DR_PARTIALLYOK=2, DR_NOTAVAILABLE=-4,
-// >>> DR_NOTCALIBRATED=-6, DR_NOTINITIALIZED=-7, DR_UNKNOWNERROR=-1) are
-// >>> the ones you confirmed and can be trusted as written.
+// >>> SYNTAX SOURCE: variable types, file functions (ExistFile/ReadFile/
+// >>> WriteFile/DeleteFile), Wait(), and the string functions (strcpy/
+// >>> strcat/strcmp/strlen/sprintf) below are confirmed against
+// >>> nisoftware.net's Macro Functions reference (p4c11s19.html for file
+// >>> functions, p4c17s6.html for Wait, p4c2s16.html for string
+// >>> functions). The Stg_ stage functions and status codes were
+// >>> confirmed separately in earlier testing.
 // >>>
-// >>> The plain-text FILE I/O calls (FileExists, FileReadText,
-// >>> FileWriteText, FileDelete), the string-splitting helpers
-// >>> (GetLine, GetToken, StrToDouble, IntToStr, DoubleToStr), and the
-// >>> polling delay (Wait) are NOT confirmed against this NIS-Elements
-// >>> install's real Macro Language Reference - they're written using the
-// >>> most common naming convention for this kind of macro function, as a
-// >>> starting structure, not a guarantee they exist under these exact
-// >>> names/signatures. Before running this for real:
-// >>>   1. Open the Macro editor's built-in function list/autocomplete
-// >>>      (or Help -> Macro Language Reference) inside NIS-Elements.
-// >>>   2. Search for "file" (read/write/exists/delete a text file) and
-// >>>      "wait"/"sleep" (pause for N ms) to find the real function
-// >>>      names and exact signatures.
-// >>>   3. Swap the real names into the marked lines below.
+// >>> The docs don't confirm pointer-arithmetic semantics for strchr in
+// >>> this language (e.g. subtracting two char* to get an offset), so
+// >>> line/token splitting below is done with manual index scanning over
+// >>> the char arrays instead - only confirmed primitives (array
+// >>> indexing, comparison, assignment) are used for that part.
+// >>>
+// >>> ONE REMAINING UNCONFIRMED PIECE: atof() for string-to-double
+// >>> conversion. It's a very standard C runtime function and referenced
+// >>> throughout the docs, but not pinned to an exact NIS macro page the
+// >>> way the others above are. It's isolated to two single lines below
+// >>> (marked UNVERIFIED) so it's easy to test/swap on its own.
 // ------------------------------------------------------------
 
 char FOLDER[256];
-FOLDER = "bridge_data\\";
-char COMMAND_FILE[256];
-COMMAND_FILE = FOLDER + "command.txt";
-char RESPONSE_FILE[256];
-RESPONSE_FILE = FOLDER + "response.txt";
+strcpy(FOLDER, "bridge_data\\");
 
-Int keep_running;
+char COMMAND_FILE[256];
+strcpy(COMMAND_FILE, FOLDER);
+strcat(COMMAND_FILE, "command.txt");
+
+char RESPONSE_FILE[256];
+strcpy(RESPONSE_FILE, FOLDER);
+strcat(RESPONSE_FILE, "response.txt");
+
+int keep_running;
 keep_running = 1;
 
 while (keep_running == 1)
 {
 	// ── 1. Wait for Python to drop a command file ──────────────────────
-	// UNVERIFIED: confirm FileExists() is the real built-in name/signature.
-	if (FileExists(COMMAND_FILE) == 1)
+	if (ExistFile(COMMAND_FILE) == 1)
 	{
+		// Zero the buffer first: ReadFile's docs don't specify whether a
+		// short file leaves the tail of Buffer null-terminated, so clear
+		// it ourselves before reading to guarantee contents is a clean
+		// C string afterward.
 		char contents[1000];
-		// UNVERIFIED: confirm FileReadText() (or equivalent) reads a
-		// whole text file into a single string.
-		contents = FileReadText(COMMAND_FILE);
+		int zero_i;
+		zero_i = 0;
+		while (zero_i < 1000)
+		{
+			contents[zero_i] = 0;
+			zero_i = zero_i + 1;
+		}
+		ReadFile(COMMAND_FILE, contents, 1000);
 
 		// ── 2. Delete command.txt immediately so it can't re-trigger ───
-		// UNVERIFIED: confirm FileDelete() is the real built-in name.
-		FileDelete(COMMAND_FILE);
+		DeleteFile(COMMAND_FILE);
 
-		// ── 3. Split into lines and read the command word ─────────────
-		// UNVERIFIED: GetLine(text, index) as a "get line N" helper is a
-		// placeholder - confirm the real string-splitting function(s)
-		// this macro language provides.
+		// ── 3. Manually split out line 1 (the command word) ────────────
+		// Scan for the first CR (13) or LF (10) or end of string.
 		char command_word[50];
-		command_word = GetLine(contents, 0);
+		int i;
+		i = 0;
+		while (contents[i] != 0 && contents[i] != 13 && contents[i] != 10)
+		{
+			command_word[i] = contents[i];
+			i = i + 1;
+		}
+		command_word[i] = 0;
+
+		// Skip over the line-ending character(s) (handles CRLF or a bare
+		// CR/LF) to find where line 2 starts, if there is one.
+		int line2_start;
+		line2_start = i;
+		while (contents[line2_start] == 13 || contents[line2_start] == 10)
+		{
+			line2_start = line2_start + 1;
+		}
 
 		double x;
 		double y;
 		double z;
-		Int status;
+		int status;
 		x = 0.0;
 		y = 0.0;
 		z = 0.0;
 
-		if (command_word == "GET_POS")
+		if (strcmp(command_word, "GET_POS") == 0)
 		{
 			// ── 4a. Read the real stage position ───────────────────────
 			status = StgGetPos(&x, &y, &z);
 		}
-		else if (command_word == "MOVE_XY")
+		else if (strcmp(command_word, "MOVE_XY") == 0)
 		{
 			// ── 4b. Parse "x,y" from line 2 and move ────────────────────
 			// Safety note: this macro does NOT decide whether a move is
@@ -104,12 +128,54 @@ while (keep_running == 1)
 			// already been passed by the caller. Do not add any other
 			// path that calls StgMoveXY from this macro.
 			char xy_line[100];
-			xy_line = GetLine(contents, 1);
+			int j;
+			j = 0;
+			while (contents[line2_start + j] != 0 && contents[line2_start + j] != 13 && contents[line2_start + j] != 10)
+			{
+				xy_line[j] = contents[line2_start + j];
+				j = j + 1;
+			}
+			xy_line[j] = 0;
 
-			// UNVERIFIED: confirm the real token-split + string-to-double
-			// helpers (GetToken / StrToDouble here are placeholders).
-			x = StrToDouble(GetToken(xy_line, ",", 0));
-			y = StrToDouble(GetToken(xy_line, ",", 1));
+			// Find the comma splitting "x,y".
+			int comma_index;
+			comma_index = -1;
+			int k;
+			k = 0;
+			while (xy_line[k] != 0 && comma_index == -1)
+			{
+				if (xy_line[k] == 44)	// ASCII ','
+				{
+					comma_index = k;
+				}
+				k = k + 1;
+			}
+
+			char x_str[50];
+			int m;
+			m = 0;
+			while (m < comma_index)
+			{
+				x_str[m] = xy_line[m];
+				m = m + 1;
+			}
+			x_str[m] = 0;
+
+			char y_str[50];
+			int n;
+			n = 0;
+			while (xy_line[comma_index + 1 + n] != 0)
+			{
+				y_str[n] = xy_line[comma_index + 1 + n];
+				n = n + 1;
+			}
+			y_str[n] = 0;
+
+			// UNVERIFIED: confirm atof() is the real built-in name for
+			// string-to-double conversion in this macro language.
+			x = atof(x_str);
+			// UNVERIFIED: same as above.
+			y = atof(y_str);
 
 			status = StgMoveXY(x, y);
 
@@ -128,15 +194,11 @@ while (keep_running == 1)
 
 		// ── 5. Write the response for Python to pick up ────────────────
 		char response[200];
-		// UNVERIFIED: confirm IntToStr()/DoubleToStr() (or equivalents)
-		// for formatting numbers into a string.
-		response = IntToStr(status) + "," + DoubleToStr(x) + "," + DoubleToStr(y) + "," + DoubleToStr(z);
-		// UNVERIFIED: confirm FileWriteText() overwrites (not appends).
-		FileWriteText(RESPONSE_FILE, response);
+		sprintf(response, "%d,%f,%f,%f", status, x, y, z);
+		WriteFile(RESPONSE_FILE, response, strlen(response));
 	}
 
 	// ── 6. Brief pause before checking again ───────────────────────────
-	// UNVERIFIED: confirm Wait() is the real built-in and whether it
-	// takes milliseconds or seconds - adjust the value below accordingly.
-	Wait(200);
+	// Wait() takes SECONDS, not milliseconds - 0.2 = ~200ms poll interval.
+	Wait(0.2);
 }
