@@ -50,11 +50,11 @@
 // >>>   3. Swap the real names into the marked lines below.
 // ------------------------------------------------------------
 
-char FOLDER;
+char FOLDER[256];
 FOLDER = "bridge_data\\";
-char COMMAND_FILE;
+char COMMAND_FILE[256];
 COMMAND_FILE = FOLDER + "command.txt";
-char RESPONSE_FILE;
+char RESPONSE_FILE[256];
 RESPONSE_FILE = FOLDER + "response.txt";
 
 Int keep_running;
@@ -66,7 +66,7 @@ while (keep_running == 1)
 	// UNVERIFIED: confirm FileExists() is the real built-in name/signature.
 	if (FileExists(COMMAND_FILE) == 1)
 	{
-		char contents;
+		char contents[1000];
 		// UNVERIFIED: confirm FileReadText() (or equivalent) reads a
 		// whole text file into a single string.
 		contents = FileReadText(COMMAND_FILE);
@@ -79,7 +79,7 @@ while (keep_running == 1)
 		// UNVERIFIED: GetLine(text, index) as a "get line N" helper is a
 		// placeholder - confirm the real string-splitting function(s)
 		// this macro language provides.
-		char command_word;
+		char command_word[50];
 		command_word = GetLine(contents, 0);
 
 		double x;
@@ -103,7 +103,7 @@ while (keep_running == 1)
 			// sends MOVE_XY after its own move_xy(confirm=True) gate has
 			// already been passed by the caller. Do not add any other
 			// path that calls StgMoveXY from this macro.
-			char xy_line;
+			char xy_line[100];
 			xy_line = GetLine(contents, 1);
 
 			// UNVERIFIED: confirm the real token-split + string-to-double
@@ -127,7 +127,7 @@ while (keep_running == 1)
 		}
 
 		// ── 5. Write the response for Python to pick up ────────────────
-		char response;
+		char response[200];
 		// UNVERIFIED: confirm IntToStr()/DoubleToStr() (or equivalents)
 		// for formatting numbers into a string.
 		response = IntToStr(status) + "," + DoubleToStr(x) + "," + DoubleToStr(y) + "," + DoubleToStr(z);
