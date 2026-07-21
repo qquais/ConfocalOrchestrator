@@ -66,3 +66,39 @@ attached without first verifying nothing else is actively using the
 stage** (no other acquisition, calibration, or manual joystick operation
 in progress). A stray `MOVE_XY` command arriving mid-operation would move
 the stage regardless of what NIS-Elements' UI is doing at the time.
+
+### Known issues (2026-07-20) - deprioritized in favor of Ti2 SDK
+
+End-to-end testing via `acquisition/test_bridge.py` never got a response
+from this macro, even after fixing two real bugs along the way:
+
+1. **Declaration placement** - NIS's macro language does not support
+   variable declarations inside nested `{ }` blocks, only at the very top
+   of the whole macro (fails with "Cannot Evaluate the Expression"
+   otherwise). Fixed by flattening all locals to one top-level block.
+2. **Relative path** - `FOLDER` was a relative path (`"bridge_data\\"`),
+   resolved by NIS against an unknown working directory that never
+   matched `nis_bridge.py`'s `BRIDGE_DIR`. Fixed by hardcoding an
+   absolute path.
+
+After both fixes, "Run Macro From File..." still reports "finished, no
+errors" instantly instead of running the infinite polling loop. Isolated
+diagnostics ruled out several suspects:
+
+- A standalone bounded loop (5 iterations, 0.5s apart, writing to a
+  trivial `C:\` root path) also finished instantly with no output file -
+  so the `while` loop itself doesn't appear to iterate as expected.
+- A single **unconditional, non-looping** `WriteFile()` call to
+  `C:\bridge_debug_out2.txt` (no spaces, no nested paths, no loop, no
+  condition) *also* produced no file and no error.
+
+So the failure isn't specific to `bridge_data` paths, OneDrive path
+nesting, or this macro's while-loop/complexity - something more
+fundamental about file I/O or script execution isn't behaving as the
+[nisoftware.net Macro Functions reference](https://www.nisoftware.net/NikonSaleApplication/Help/Docs-D/eng_d/p4c11s19.html)
+describes, in a way neither NIS's UI nor these diagnostics could surface
+(no error dialog, no console output). Root cause unresolved.
+
+Ti2 SDK access has since been approved, making the `sdk` backend the
+intended path forward - see `acquisition/nis_bridge.py`'s module
+docstring. Revisit this macro only if the SDK path stalls.
