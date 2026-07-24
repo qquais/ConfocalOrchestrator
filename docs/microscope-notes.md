@@ -65,25 +65,70 @@ Source: [NIS-Elements AR Jobs Python API docs](https://www.nisoftware.net/NikonS
 - Execution in the main thread is required for NIS macro functions
 - A side thread allows interaction with the JOBS progress dialog
 
+## Ti2 ActiveX SDK — Confirmed Stage Control (primary approach)
+
+Now the primary path for real stage control (see "SDK Status" below for
+how the bridge/macro approach compares). Connects via:
+
+```python
+microscope = win32com.client.Dispatch(NkTi2Ax.NikonTi2AxAutoConnectMicroscope.CLSID)
+```
+
+`NkTi2Ax` is the generated Python bindings module for the SDK's own COM
+type library — lives at `.venv/Lib/site-packages/NkTi2Ax.py` (gitignored
+along with the rest of `.venv/`, so it doesn't transfer with `git clone`;
+recreate the venv locally and it regenerates via `win32com.client.gencache`/
+`makepy` against the installed SDK).
+
+Confirmed against the Ti2-E Device Simulator:
+
+| Axis | Direct property | Child settings object | Unit |
+|---|---|---|---|
+| X | `iXPOSITION` | `XPosition` (`.Value`/`.Lower`/`.Higher`) | 0.1 µm/count |
+| Y | `iYPOSITION` | `YPosition` | 0.1 µm/count |
+| Z (focus) | `iZPOSITION` | `ZPosition` | 0.01 µm/count |
+
+Units were derived by cross-referencing the simulator's `Lower`/`Higher`
+travel-limit values against the hardware spec above (X: ±570000 counts ⇒
+exactly ±57mm at 0.1µm/count; Z: 0–1,000,000 counts ⇒ exactly the
+documented 10mm stroke at 0.01µm/count, matching the doc's stated 0.01µm
+min focus increment), then verified with a live round-trip move test.
+**Known gap:** Y's computed range (±37.5mm at 0.1µm/count) is off by ~1mm
+from the documented ±36.5mm — likely just the simulator's configured soft
+limit differing from the real hardware's exact stroke, not a unit
+mismatch (X and Z both match their spec exactly), but re-check against
+the real microscope if Y positions come out visibly wrong.
+
+Both property forms (`iXPOSITION` and `XPosition.Value`) return identical
+values — see `acquisition/nikon_stage_test.py` for the confirmation
+script. The property naming pattern matches `iTURRET1POS`/`Turret1Pos`,
+already confirmed working in `acquisition/nikon_test.py`.
+
+Implemented in `acquisition/nis_sdk.py` (`NISSdk` class — converts to/from
+plain microns at the API boundary) and wired into `StagePositionManager`
+as `backend="sdk"` (`acquisition/stage_positions.py`).
+
 ## Next Steps for Acquisition Engine
 
 Planned scripts under `acquisition/`:
 
 - `acquisition/nis_connection.py` → test stage connection (done)
-- `acquisition/run_protocol.py` → read YAML and run experiment
-- `acquisition/focus_check.py` → detect and correct focus drift
+- `acquisition/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
+- `acquisition/run_protocol.py` → read YAML and run experiment (loop
+  structure done; not yet wired to the `sdk` backend or `focus_check.py`)
+- `acquisition/focus_check.py` → detect and correct focus drift (drift
+  detection done; not yet wired into `run_protocol.py`)
 - `acquisition/dashboard.py` → FastAPI live preview dashboard
 
 ## SDK Status
 
-- NIS-Elements Jobs Python API confirmed available
-- Remote Desktop credentials pending from Briana
-- **2026-07-20: Ti2 SDK access approved.** Not yet installed/located on
-  this machine (checked `C:\Program Files\NIS-Elements\` and common user
-  dirs — nothing found beyond the unrelated `NkImgSDK.dll` imaging SDK).
-  Next step: get the actual SDK installer/package onto this machine and
-  confirm what Python bindings (if any) it ships with, vs. needing a
-  ctypes/cffi wrapper around a C/C++ SDK.
+- NIS-Elements Jobs Python API confirmed available (separate from the
+  ActiveX SDK below — this is the `nis` module used by
+  `nis_connection.py`/`run_protocol.py`'s Jobs-API path).
+- **2026-07-20: Ti2 SDK access approved.**
+- **Confirmed and implemented** — see "Ti2 ActiveX SDK — Confirmed Stage
+  Control" above. Connection pattern, turret control, and XY/Z stage
+  control are all confirmed against the Ti2-E Device Simulator.
 
 ## `acquisition/` Environment Setup (this machine, 2026-07-20)
 
