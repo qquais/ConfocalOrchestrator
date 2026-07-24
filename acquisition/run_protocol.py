@@ -1,58 +1,98 @@
 # run_protocol.py
 # ------------------------------------------------------------
-# Loads an acquisition protocol from a YAML file (protocols/example_protocol.yaml)
-# and runs it on the Nikon Eclipse Ti2-E via the NIS-Elements Python API:
-# for every time point, visit every XY position, step through the z-stack
-# at that position, and capture every channel at each z-slice.
+# Loads an acquisition protocol from a YAML file (protocols/example_protocol.yaml
+# by default - see --protocol) and runs it: for every time point, visit every
+# XY position, step through the z-stack at that position, and capture every
+# channel at each z-slice.
 #
-# >>> Run this ON the microscope PC, with NIS-Elements AR 6.20.02 already
-# >>> open, to drive the real stage. The `nis` module (and the job `ctx`
-# >>> context object used for abort checks) are provided by NIS-Elements
-# >>> itself and only exist in that environment.
-# >>>
-# >>> Off the microscope PC (Mac/Linux/plain Windows Python), this falls
-# >>> back to acquisition/nis_mock.py's MockNIS - same method names/
-# >>> signatures as the real API - so the whole loop below (load protocol,
-# >>> visit positions, step the z-stack, "capture" each channel) can be
-# >>> developed and tested without needing Remote Desktop access to the
-# >>> real microscope. See nis_mock.py's module docstring.
+# Stage control goes through one of three backends (--backend, default
+# "mock" - safe, no hardware):
+#   mock   -> the real NIS-Elements Jobs Python API (`nis` module + `ctx`
+#             job-context object) if this happens to be running ON the
+#             microscope PC with NIS-Elements open, else nis_mock.MockNIS
+#             for offline development. Same as this script's original
+#             behavior.
+#   sdk    -> nis_sdk.NISSdk - real stage control via the Ti2 ActiveX SDK
+#             (confirmed against the Ti2-E Device Simulator - see
+#             docs/microscope-notes.md).
+#   bridge -> nis_bridge.NISBridge - real stage control via the native-
+#             macro bridge (deprioritized now that "sdk" works, kept as
+#             a fallback).
 #
 # Run:
-#   python run_protocol.py
+#   python run_protocol.py                                    # mock, example protocol
+#   python run_protocol.py --backend sdk --protocol protocols/test_protocol_short.yaml
 # ------------------------------------------------------------
 
+import argparse
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import uvicorn
 import yaml  # PyYAML - reads the .yaml protocol file into a Python dict
+from PIL import Image
 
 import dashboard  # this repo's acquisition/dashboard.py - shared status dict + web UI
-
-# ── 1. Connect to the NIS-Elements Python API, or fall back to the mock ─────
-# `ctx` is the job-context object NIS-Elements provides while a script runs
-# as a Job; ctx.shouldAbort() reports whether the user clicked the Abort
-# button in NIS-Elements.
-# TODO: confirm the exact way to get `ctx` once this runs on the scope PC -
-# it may need to come from `nis` itself (e.g. `ctx = nis.ctx`) rather than
-# a top-level `ctx` module. Not confirmed yet, so this is a placeholder.
-try:
-    import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
-    from nis import ctx
-except ImportError:
-    from nis_mock import MockNIS
-    nis = MockNIS()
-    ctx = nis.ctx
-    print(
-        "'nis' module not found - using MockNIS (offline/dev mode). "
-        "This will not move a real stage or capture real images."
-    )
+from focus_check import FocusMonitor
 
 # Path to the protocol file, relative to this script - matches the existing
-# acquisition/ + protocols/ folder layout.
+# acquisition/ + protocols/ folder layout. Overridable via --protocol.
 PROTOCOL_PATH = Path(__file__).resolve().parent.parent / "protocols" / "example_protocol.yaml"
+
+
+# ── 1. Resolve the stage-control backend ─────────────────────────────────────
+def resolve_backend(name: str):
+    """Return (nis, ctx) for the given --backend name.
+
+    `ctx` is the NIS-Elements Jobs API's job-context object -
+    ctx.shouldAbort() reports whether the user clicked Abort inside NIS's
+    own Job UI. Only "mock" has one (MockNIS.ctx mimics it for offline
+    dev). "sdk" and "bridge" talk to the stage directly, with no NIS Job
+    running and therefore no Job UI to click Abort in - ctx is None for
+    those, and should_abort() below falls back to dashboard-only abort
+    checking whenever ctx is None.
+    """
+    if name == "mock":
+        # TODO: confirm the exact way to get `ctx` once this runs on the
+        # scope PC - it may need to come from `nis` itself (e.g.
+        # `ctx = nis.ctx`) rather than a top-level `ctx` module. Not
+        # confirmed yet, so this is a placeholder (unchanged from before).
+        try:
+            import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
+            from nis import ctx
+        except ImportError:
+            from nis_mock import MockNIS
+            nis = MockNIS()
+            ctx = nis.ctx
+            print(
+                "'nis' module not found - using MockNIS (offline/dev mode). "
+                "This will not move a real stage or capture real images."
+            )
+        return nis, ctx
+    elif name == "sdk":
+        from nis_sdk import NISSdk
+        return NISSdk(), None
+    elif name == "bridge":
+        from nis_bridge import NISBridge
+        return NISBridge(), None
+    else:
+        raise ValueError(f"Unknown backend '{name}'. Expected 'mock', 'sdk', or 'bridge'.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a ConfocalOrchestrator acquisition protocol.")
+    parser.add_argument(
+        "--backend", choices=("mock", "sdk", "bridge"), default="mock",
+        help="Stage-control backend (default: mock - safe, no hardware moves).",
+    )
+    parser.add_argument(
+        "--protocol", type=Path, default=PROTOCOL_PATH,
+        help=f"Path to the protocol YAML file (default: {PROTOCOL_PATH}).",
+    )
+    return parser.parse_args()
 
 
 def to_plain_float(value) -> float:
@@ -63,20 +103,17 @@ def to_plain_float(value) -> float:
     return float(value)
 
 
-def should_abort() -> bool:
+def should_abort(ctx) -> bool:
     """Return True if abort was requested from NIS-Elements OR the dashboard.
 
     Two independent abort sources feed this: the user clicking Abort inside
-    NIS-Elements itself (ctx.shouldAbort()), and the user clicking the
-    "Stop / Abort Acquisition" button on the web dashboard (which just sets
-    dashboard.acquisition_status["abort_requested"] = True). Either one stops
-    the run at the next check.
-
-    `ctx` always resolves to something with .shouldAbort() - the real
-    NIS-Elements job context on the microscope PC, or MockNIS's mock
-    context (always False) everywhere else.
+    NIS-Elements' own Job UI (ctx.shouldAbort() - only checked when `ctx`
+    isn't None, i.e. backend="mock"; "sdk"/"bridge" have no Job UI to abort
+    from), and the user clicking the "Stop / Abort Acquisition" button on
+    the web dashboard (dashboard.acquisition_status["abort_requested"]).
+    Either one stops the run at the next check.
     """
-    nis_abort = ctx.shouldAbort()
+    nis_abort = ctx.shouldAbort() if ctx is not None else False
     dashboard_abort = dashboard.acquisition_status["abort_requested"]
     return nis_abort or dashboard_abort
 
@@ -163,25 +200,40 @@ def get_z_slices(position: dict, z_stack: dict) -> list:
 
 
 # ── 5. Capture one image ─────────────────────────────────────────────────────
-def capture_image(channel: dict) -> None:
+def capture_image(nis, backend: str, channel: dict) -> Path | None:
     """Capture a single image on the given channel.
 
-    TODO: replace this placeholder with the real NIS-Elements capture call
-    (e.g. a Jobs API "Capture" step) once that function is confirmed - it
-    wasn't included in the list of API functions this script was written
-    against. For now it just prints, so the loop structure and logging
-    below can be tested end-to-end before the real capture call is wired in.
+    Returns the captured frame's path, or None if this backend can't
+    produce a real frame yet.
+
+    Only backend="mock" returns a real file today (nis_mock.MockNIS.capture()
+    writes an actual image). "sdk"/"bridge" real image capture is a
+    separate TODO from the XY/Z stage control confirmed in nis_sdk.py -
+    the real NIS-Elements capture call for those backends hasn't been
+    identified yet, so there's nothing to call here for them. Once
+    confirmed, add the real call in an `if backend == "sdk": ...` branch
+    below so focus-check (see run_acquisition) has real frames on real
+    hardware too.
     """
     print(
         f"      Capturing channel '{channel['name']}' "
         f"({channel['laser_wavelength']} nm, {channel['exposure_ms']} ms exposure)..."
     )
-    # Real capture call would go here, e.g.: nis.Capture()
+    if backend == "mock":
+        return nis.capture()
+    return None
 
 
 # ── 6. Run the full acquisition ──────────────────────────────────────────────
-def run_acquisition(protocol: dict) -> int:
+def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
     """Loop: time points -> XY positions -> z-slices -> channels.
+
+    After each timepoint, runs a focus-drift check (focus_check.FocusMonitor)
+    against the timepoint's first captured frame - the first timepoint sets
+    the baseline, later ones are compared against it. Only meaningful when
+    capture_image() actually returns a frame (backend="mock" today - see
+    its docstring); for "sdk"/"bridge" the check is skipped with a note,
+    since there's no real frame yet to check.
 
     Returns the total number of images captured.
     """
@@ -193,6 +245,8 @@ def run_acquisition(protocol: dict) -> int:
     duration_hours = timelapse["duration_hours"]
     interval_minutes = timelapse["interval_minutes"]
     total_timepoints = timelapse.get("total_timepoints")
+
+    focus_monitor = FocusMonitor()
 
     start_time = time.monotonic()
     images_captured = 0
@@ -216,12 +270,16 @@ def run_acquisition(protocol: dict) -> int:
             timepoint_label = f"{timepoint + 1} (elapsed {elapsed_hours:.2f}h / {duration_hours}h)"
 
         # ── Check for user abort before starting this timepoint ──────────
-        if should_abort():
+        if should_abort(ctx):
             print(f"\nAbort requested by user - stopping before timepoint {timepoint_label}.")
             dashboard.update_status(status="aborted")
             break
 
         print(f"\n--- Timepoint {timepoint_label} ---")
+
+        # First frame captured this timepoint - used as the focus-check
+        # reference below (see FocusMonitor docstring / module comment).
+        timepoint_reference_frame = None
 
         try:
             # ── Loop through every XY position ───────────────────────────
@@ -240,7 +298,9 @@ def run_acquisition(protocol: dict) -> int:
 
                     # ── Capture every channel at this z-slice ─────────────
                     for channel in channels:
-                        capture_image(channel)
+                        frame_path = capture_image(nis, backend, channel)
+                        if timepoint_reference_frame is None and frame_path is not None:
+                            timepoint_reference_frame = frame_path
                         images_captured += 1
                         dashboard.update_status(
                             timepoint_current=timepoint + 1,
@@ -248,6 +308,27 @@ def run_acquisition(protocol: dict) -> int:
                             channel_name=channel["name"],
                             images_captured=images_captured,
                         )
+
+            # ── Focus-drift check for this timepoint ──────────────────────
+            if timepoint_reference_frame is not None:
+                frame = np.array(Image.open(timepoint_reference_frame).convert("RGB"))
+                if focus_monitor.baseline is None:
+                    baseline = focus_monitor.set_baseline(frame)
+                    print(f"  Focus baseline set: sharpness={baseline:.6f}")
+                else:
+                    result = focus_monitor.check(frame)
+                    flag = "  <-- POSSIBLE FOCUS DRIFT" if result.drift_detected else ""
+                    print(
+                        f"  Focus check: sharpness={result.sharpness:.6f} "
+                        f"(drop={result.percent_drop:.1%}){flag}"
+                    )
+                    dashboard.update_status(focus_drift_detected=result.drift_detected)
+            elif backend != "mock":
+                print(
+                    f"  Focus check skipped - backend='{backend}' has no confirmed real "
+                    "capture call yet (see capture_image()'s TODO), so there's no frame "
+                    "to check focus against."
+                )
 
         except Exception as e:
             # A failure partway through one timepoint (e.g. one bad move or
@@ -267,20 +348,26 @@ def run_acquisition(protocol: dict) -> int:
 
 
 def main():
-    print(f"Loading protocol from: {PROTOCOL_PATH}")
+    args = parse_args()
+
+    print(f"Loading protocol from: {args.protocol}")
 
     try:
-        protocol = load_protocol(PROTOCOL_PATH)
+        protocol = load_protocol(args.protocol)
     except Exception as e:
         print(f"Failed to load protocol file: {e}")
         return
 
     print_summary(protocol)
+    print(f"Backend:     {args.backend}")
+    print("=" * 60)
 
     # ── SAFETY: nothing below this line runs without explicit confirmation ──
     if not confirm_start():
         print("Acquisition cancelled by user. No stage motion performed.")
         return
+
+    nis, ctx = resolve_backend(args.backend)
 
     start_dashboard_server()
 
@@ -293,12 +380,13 @@ def main():
         images_captured=0,
         error_message=None,
         abort_requested=False,
+        focus_drift_detected=False,
     )
 
     print(f"\nAcquisition started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     try:
-        images_captured = run_acquisition(protocol)
+        images_captured = run_acquisition(protocol, nis, ctx, args.backend)
     except Exception as e:
         print(f"\nAcquisition FAILED: {e}")
         dashboard.update_status(status="error", error_message=str(e))

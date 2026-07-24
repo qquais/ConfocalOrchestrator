@@ -33,7 +33,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from skimage.color import rgb2gray
@@ -103,7 +102,10 @@ class FocusMonitor:
             raise RuntimeError("FocusMonitor.set_baseline() must be called before check().")
 
         sharpness = compute_sharpness(image)
-        percent_drop = max(0.0, (self.baseline - sharpness) / self.baseline)
+        # A zero baseline (e.g. a blank/featureless reference frame) makes
+        # "percent drop" undefined - treat as no drop rather than divide by
+        # zero, since there's no real signal to measure drift against.
+        percent_drop = max(0.0, (self.baseline - sharpness) / self.baseline) if self.baseline > 0 else 0.0
 
         if percent_drop >= self.drop_threshold:
             self._consecutive_low += 1
@@ -122,6 +124,8 @@ class FocusMonitor:
 
 # ── 4. Demo / self-test ──────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     INPUT_IMAGE = "data/analysis/nd2_sample/frame_0.png"
     OUTPUT_DIR = Path("data/analysis/focus_check")
     OUTPUT_PLOT = OUTPUT_DIR / "sharpness_over_time.png"

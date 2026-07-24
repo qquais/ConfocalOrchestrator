@@ -1,0 +1,64 @@
+# ConfocalOrchestrator - Short Unattended Test Protocol
+# Purpose: a SHORT loop for exercising run_protocol.py end-to-end (backend
+# selection, position/z/channel loop, focus-drift check, dashboard) - not a
+# real biology run. See protocols/example_protocol.yaml for the real
+# biofilm-group protocol this is scaled down from.
+#
+# Small, safe position offsets (well within the +/-57mm / +/-36.5mm stage
+# travel limits), a short z-stack, one channel, and a fixed small number of
+# timepoints with a short interval so a full run finishes in well under a
+# minute against the mock backend.
+
+protocol:
+  name: "short_test_loop"
+  description: "Short unattended test: 2 positions, 2 z-slices, 1 channel, 4 timepoints"
+  created_by: "Qurratul Ain Quais"
+  version: "0.1"
+
+objective:
+  magnification: 60
+  name: "60x Oil"
+  immersion: "oil"
+
+detector:
+  n_sparc_mode: "CF Mode"
+
+positions:
+  - id: 1
+    label: "test_position_1"
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - id: 2
+    label: "test_position_2"
+    x: 500.0
+    y: 500.0
+    z: 0.0
+
+z_stack:
+  enabled: true
+  num_slices: 2
+  z_start: -0.5
+  z_end: 0.5
+  z_step: 1.0
+
+resolution:
+  width_px: 1024
+  height_px: 1024
+
+channels:
+  - id: 0
+    name: "Channel 488"
+    laser_wavelength: 488
+    laser_power: 5.0
+    exposure_ms: 50
+
+timelapse:
+  interval_minutes: 0.05     # 3 seconds between timepoints
+  duration_hours: 1          # upper bound; total_timepoints below cuts it short
+  total_timepoints: 4
+
+output:
+  save_directory: "data/captures/short_test/"
+  format: "nd2"
+  filename_convention: "YYYY.MM.DD.AB.Z.2.S.C.60XOIL.S9CAI.nd2"
