@@ -27,8 +27,17 @@
 #      Repeat for Z.
 # ------------------------------------------------------------
 
+import sys
+
 import win32com.client
 import NkTi2Ax
+
+# --read: take a single snapshot and exit - no pause, no re-prompt. Lets this
+# script be invoked twice as two separate processes (once before a manual
+# move in the simulator GUI, once after), which works because
+# AutoConnectMicroscope reconnects to the SAME running simulator instance/
+# state each time rather than spinning up a fresh one.
+READ_ONLY = "--read" in sys.argv
 
 microscope: NkTi2Ax.NikonTi2AxAutoConnectMicroscope = win32com.client.Dispatch(
     NkTi2Ax.NikonTi2AxAutoConnectMicroscope.CLSID
@@ -50,32 +59,32 @@ def read_child_objects() -> None:
 
 
 print("=" * 60)
-print("Stage property confirmation test")
+print("Stage property confirmation test" + (" (--read snapshot)" if READ_ONLY else ""))
 print("=" * 60)
 
-print("\n--- Reading BEFORE any manual move ---")
-print("Direct properties:")
+print("\nDirect properties:")
 read_direct_properties()
 print("Child settings objects:")
 read_child_objects()
 
-print(
-    "\nNow, in the simulator window: move the stage by a KNOWN distance "
-    "using its own controls, and note what the simulator's own display "
-    "reports for that move (in whatever unit it shows)."
-)
-input("Press Enter here once you've made the move and noted the simulator's own reading...")
+if not READ_ONLY:
+    print(
+        "\nNow, in the simulator window: move the stage by a KNOWN distance "
+        "using its own controls, and note what the simulator's own display "
+        "reports for that move (in whatever unit it shows)."
+    )
+    input("Press Enter here once you've made the move and noted the simulator's own reading...")
 
-print("\n--- Reading AFTER manual move ---")
-print("Direct properties:")
-read_direct_properties()
-print("Child settings objects:")
-read_child_objects()
+    print("\n--- Reading AFTER manual move ---")
+    print("Direct properties:")
+    read_direct_properties()
+    print("Child settings objects:")
+    read_child_objects()
 
-print(
-    "\nCompare the delta above (reading after minus reading before) against "
-    "the distance you moved per the simulator's own display. If they match "
-    "1:1, the property is already in the simulator's displayed unit "
-    "(most likely microns). If not, note the ratio - that's the scale "
-    "factor needed in nis_sdk.py."
-)
+    print(
+        "\nCompare the delta above (reading after minus reading before) against "
+        "the distance you moved per the simulator's own display. If they match "
+        "1:1, the property is already in the simulator's displayed unit "
+        "(most likely microns). If not, note the ratio - that's the scale "
+        "factor needed in nis_sdk.py."
+    )
