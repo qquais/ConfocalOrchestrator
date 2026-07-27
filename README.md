@@ -4,7 +4,23 @@ An automated pipeline for confocal time-lapse imaging and analysis of *Physarum 
 
 ## Status
 
-Early development — Stage 1 (Discovery & Setup) moving into acquisition integration. Analysis pipeline validated on real Physarum data; hardware specs and NIS-Elements API documented (see `docs/microscope-notes.md`), first stage-connection script drafted (`acquisition/nis_connection.py`), and a real biofilm imaging protocol captured (`protocols/example_protocol.yaml`). Still pending: Remote Desktop access to the microscope PC to actually test the connection.
+Analysis pipeline validated on real Physarum data. Acquisition side:
+**real stage control is confirmed working**, end-to-end — the full
+timepoint/position/z-stack/channel loop, plus the web dashboard's
+Stop/Abort button, all confirmed against the Ti2-E Device Simulator via
+the Ti2 ActiveX SDK (`acquisition/nis_sdk.py`, `--backend sdk`).
+
+**Real image capture is not yet wired in.** The Ti2 SDK family (ActiveX,
+native C, .NET) was exhaustively confirmed to have no capture path at
+all — capture has to come through NIS-Elements' own Jobs API instead
+(Capture task → PythonScript task), which is documented and ready to
+test in `acquisition/nis_jobs_capture.py`, but blocked on JOBS Editor
+being licensed on the install. Once that's confirmed live, it gets
+wired into `run_protocol.py`'s `capture_image()`.
+
+Not yet tested against the real physical microscope — everything above
+is confirmed against the simulator only. See `docs/microscope-notes.md`
+for full investigation detail and confirmed API specifics.
 
 ## About
 
@@ -27,6 +43,11 @@ Scripts handle the full ND2 → results workflow:
 | `analysis/segment_nd2.py` | Single PNG | Cellpose segmentation overlay |
 | `analysis/track_nuclei.py` | PNG frame sequence | Per-nucleus trajectories CSV + visualisation (Cellpose + trackpy) |
 | `analysis/convert_to_ometiff.py` | ND2 file | OME-TIFF (pixels + metadata in one open format) |
+| `analysis/fluorescence_pipeline.py` | Fluorescence TIFF frame folder (`--data`/`--output`/`--frames` CLI args) | Per-nucleus trajectories CSV + tracking visualisation PNG (Cellpose + trackpy) |
+| `analysis/synchronization.py` | Trajectories CSV (from `fluorescence_pipeline.py`) | Velocity CSV, nucleus-pair correlation matrix CSV, text report, and a heatmap + speed-over-time plot — measures whether nuclei move in a coordinated way |
+| `analysis/compare_sequences.py` | Two trajectory CSVs (`seq01`/`seq02` under `data/analysis/fluorescence/`) | Printed + saved side-by-side comparison table (avg nuclei/frame, track length, nucleus area) |
+
+`analysis/cellpose_runtime.py` isn't a standalone script — it's a shared helper (`resolve_cellpose_gpu_mode()`) imported by the Cellpose-based scripts above to resolve the `CELLPOSE_GPU` setting consistently.
 
 Cellpose defaults to `CELLPOSE_GPU=auto`, which uses CUDA when PyTorch can see a GPU and falls back to CPU otherwise. To force GPU mode, run a script like `CELLPOSE_GPU=1 python3 analysis/segment_nd2.py`.
 
@@ -46,15 +67,26 @@ data/
 
 ```
 ConfocalOrchestrator/
-├── acquisition/     # Microscope control and image capture (in progress)
-│                    #   nis_connection.py — stage connection smoke test (done)
+├── acquisition/     # Microscope control and image capture
+│                    #   nis_sdk.py — real stage control via the Ti2 ActiveX SDK;
+│                    #     confirmed end-to-end (incl. abort) against the Ti2-E Device
+│                    #     Simulator (done)
+│                    #   nis_mock.py — offline/no-hardware simulation backend; also the
+│                    #     only backend that produces real captured frames today (done)
+│                    #   stage_positions.py — save/list/go-to named stage positions (done)
 │                    #   run_protocol.py — reads a protocol YAML and runs the full
-│                    #     timepoint/position/z-stack/channel loop (done, untested on real hardware)
+│                    #     timepoint/position/z-stack/channel loop; confirmed end-to-end
+│                    #     against real (simulator) stage control (done). Real image
+│                    #     capture on real hardware is the one open piece — see
+│                    #     nis_jobs_capture.py
+│                    #   nis_jobs_capture.py — documented plan + untested placeholder for
+│                    #     real image capture via NIS-Elements' Jobs API; blocked on
+│                    #     JOBS Editor licensing
 │                    #   dashboard.py — live web dashboard (status/frame/abort), wired into
-│                    #     run_protocol.py's loop so it reflects a real run (done, tested)
-│                    #   focus_check.py — Laplacian-variance focus drift detection,
-│                    #     the safety net for overnight runs (done, tested; not yet
-│                    #     called from run_protocol.py's loop)
+│                    #     run_protocol.py's loop (done, tested incl. abort)
+│                    #   focus_check.py — Laplacian-variance focus drift detection, wired
+│                    #     into run_protocol.py's loop (done; only runs once a real frame
+│                    #     exists, i.e. the mock backend, until real capture lands)
 ├── analysis/        # Preprocessing, segmentation, and tracking scripts
 ├── validation/      # Accuracy benchmarking
 ├── protocols/       # Imaging protocol files (e.g. example_protocol.yaml)
@@ -79,4 +111,4 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> Hardware integration (NIS-Elements microscope control) is underway: hardware specs, the confirmed NIS-Elements Jobs Python API, and a first stage-connection script are in place (see `docs/microscope-notes.md`). It hasn't been tested against the real microscope yet — that needs Remote Desktop access to the microscope PC, which is pending.
+> Hardware integration status: real stage control is confirmed working end-to-end against the Ti2-E Device Simulator via the Ti2 ActiveX SDK (`--backend sdk`, see `acquisition/nis_sdk.py` and `docs/microscope-notes.md`). Real image capture is documented and ready to test (`acquisition/nis_jobs_capture.py`) but blocked on NIS-Elements' JOBS Editor being licensed on the install. Nothing here has been run against the real physical microscope yet.
