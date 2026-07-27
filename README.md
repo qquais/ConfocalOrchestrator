@@ -53,6 +53,29 @@ Cellpose defaults to `CELLPOSE_GPU=auto`, which uses CUDA when PyTorch can see a
 
 **Metrics tracked per frame:** area, perimeter, circularity, eccentricity, major/minor axis length, solidity.
 
+## Acquisition Pipeline
+
+Unlike the analysis scripts above (each a standalone file-in/file-out
+transform), acquisition is a live control system — one orchestrator
+plus pluggable stage-control backends, not independent CLI tools. So
+this table tracks role and confirmed status per file instead of
+input/output:
+
+| File | Role | Status |
+|---|---|---|
+| `run_protocol.py` | Orchestrator — reads a protocol YAML, loops timepoints → positions → z-stack → channels, captures, runs focus-check, drives the dashboard | Loop confirmed end-to-end (incl. abort) against `--backend sdk`; real capture still pending |
+| `nis_sdk.py` | `NISSdk` backend — real stage control via the Ti2 ActiveX SDK | Confirmed, primary backend |
+| `nis_mock.py` | `MockNIS` backend — offline/no-hardware simulation; also the only source of real captured frames today | Working, offline-dev fallback |
+| `stage_positions.py` | `StagePositionManager` — save/list/go-to named stage positions (`protocols/stage_positions.json`) | Working |
+| `nis_jobs_capture.py` | Documented plan + untested placeholder for real image capture via NIS-Elements' Jobs API | Blocked on JOBS Editor licensing |
+| `dashboard.py` | Live web UI (`localhost:8000`) — status, latest frame, Stop/Abort | Working, tested incl. abort |
+| `focus_check.py` | `FocusMonitor` — Laplacian-variance focus-drift detection | Working; only runs once a real frame exists (mock today) |
+| `nis_connection.py` | Standalone confirmation script for the NIS-Elements Jobs API (`XY_GetPosition`/`XY_Move`) | One-off, already confirmed |
+| `nikon_test.py` | Standalone confirmation script — ActiveX connection pattern + turret property | One-off, already confirmed |
+| `nikon_stage_test.py` | Standalone confirmation script — XY/Z stage property names and units | One-off, already confirmed |
+
+See `docs/microscope-notes.md` for full investigation detail behind each confirmed/blocked status above.
+
 ## Data Folder Structure
 
 ```
@@ -67,26 +90,7 @@ data/
 
 ```
 ConfocalOrchestrator/
-├── acquisition/     # Microscope control and image capture
-│                    #   nis_sdk.py — real stage control via the Ti2 ActiveX SDK;
-│                    #     confirmed end-to-end (incl. abort) against the Ti2-E Device
-│                    #     Simulator (done)
-│                    #   nis_mock.py — offline/no-hardware simulation backend; also the
-│                    #     only backend that produces real captured frames today (done)
-│                    #   stage_positions.py — save/list/go-to named stage positions (done)
-│                    #   run_protocol.py — reads a protocol YAML and runs the full
-│                    #     timepoint/position/z-stack/channel loop; confirmed end-to-end
-│                    #     against real (simulator) stage control (done). Real image
-│                    #     capture on real hardware is the one open piece — see
-│                    #     nis_jobs_capture.py
-│                    #   nis_jobs_capture.py — documented plan + untested placeholder for
-│                    #     real image capture via NIS-Elements' Jobs API; blocked on
-│                    #     JOBS Editor licensing
-│                    #   dashboard.py — live web dashboard (status/frame/abort), wired into
-│                    #     run_protocol.py's loop (done, tested incl. abort)
-│                    #   focus_check.py — Laplacian-variance focus drift detection, wired
-│                    #     into run_protocol.py's loop (done; only runs once a real frame
-│                    #     exists, i.e. the mock backend, until real capture lands)
+├── acquisition/     # Microscope control and image capture — see "Acquisition Pipeline" above
 ├── analysis/        # Preprocessing, segmentation, and tracking scripts
 ├── validation/      # Accuracy benchmarking
 ├── protocols/       # Imaging protocol files (e.g. example_protocol.yaml)
