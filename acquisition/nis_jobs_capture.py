@@ -7,7 +7,7 @@
 # this install (confirmed NOT licensed as of 2026-07-27 - checked via
 # NIS-Elements' own menu bar, version 6.10.01). Nothing in this file is
 # called anywhere. run_protocol.py's capture_image() still correctly
-# returns None for backend="sdk"/"bridge", and that remains intentional,
+# returns None for backend="sdk", and that remains intentional,
 # confirmed-working behavior (see its docstring) - this file changes
 # nothing about it.
 #

@@ -5,19 +5,21 @@
 # XY position, step through the z-stack at that position, and capture every
 # channel at each z-slice.
 #
-# Stage control goes through one of three backends (--backend, default
+# Stage control goes through one of two backends (--backend, default
 # "mock" - safe, no hardware):
-#   mock   -> the real NIS-Elements Jobs Python API (`nis` module + `ctx`
-#             job-context object) if this happens to be running ON the
-#             microscope PC with NIS-Elements open, else nis_mock.MockNIS
-#             for offline development. Same as this script's original
-#             behavior.
-#   sdk    -> nis_sdk.NISSdk - real stage control via the Ti2 ActiveX SDK
-#             (confirmed against the Ti2-E Device Simulator - see
-#             docs/microscope-notes.md).
-#   bridge -> nis_bridge.NISBridge - real stage control via the native-
-#             macro bridge (deprioritized now that "sdk" works, kept as
-#             a fallback).
+#   mock -> the real NIS-Elements Jobs Python API (`nis` module + `ctx`
+#           job-context object) if this happens to be running ON the
+#           microscope PC with NIS-Elements open, else nis_mock.MockNIS
+#           for offline development. Same as this script's original
+#           behavior.
+#   sdk  -> nis_sdk.NISSdk - real stage control via the Ti2 ActiveX SDK,
+#           confirmed against the Ti2-E Device Simulator - full
+#           position/z-stack/channel loop + abort confirmed end-to-end
+#           2026-07-27 (see docs/microscope-notes.md).
+#
+# A third backend, "bridge" (native-macro file-polling), was removed
+# 2026-07-27 - never achieved a working round-trip, superseded by "sdk".
+# See git history if ever worth revisiting.
 #
 # Run:
 #   python run_protocol.py                                    # mock, example protocol
@@ -50,10 +52,11 @@ def resolve_backend(name: str):
     `ctx` is the NIS-Elements Jobs API's job-context object -
     ctx.shouldAbort() reports whether the user clicked Abort inside NIS's
     own Job UI. Only "mock" has one (MockNIS.ctx mimics it for offline
-    dev). "sdk" and "bridge" talk to the stage directly, with no NIS Job
-    running and therefore no Job UI to click Abort in - ctx is None for
-    those, and should_abort() below falls back to dashboard-only abort
-    checking whenever ctx is None.
+    dev). "sdk" talks to the stage directly, with no NIS Job running and
+    therefore no Job UI to click Abort in - ctx is None for it, and
+    should_abort() below falls back to dashboard-only abort checking
+    whenever ctx is None (confirmed working this way against the
+    simulator, 2026-07-27).
     """
     if name == "mock":
         # TODO: confirm the exact way to get `ctx` once this runs on the
@@ -75,17 +78,14 @@ def resolve_backend(name: str):
     elif name == "sdk":
         from nis_sdk import NISSdk
         return NISSdk(), None
-    elif name == "bridge":
-        from nis_bridge import NISBridge
-        return NISBridge(), None
     else:
-        raise ValueError(f"Unknown backend '{name}'. Expected 'mock', 'sdk', or 'bridge'.")
+        raise ValueError(f"Unknown backend '{name}'. Expected 'mock' or 'sdk'.")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a ConfocalOrchestrator acquisition protocol.")
     parser.add_argument(
-        "--backend", choices=("mock", "sdk", "bridge"), default="mock",
+        "--backend", choices=("mock", "sdk"), default="mock",
         help="Stage-control backend (default: mock - safe, no hardware moves).",
     )
     parser.add_argument(
@@ -108,8 +108,8 @@ def should_abort(ctx) -> bool:
 
     Two independent abort sources feed this: the user clicking Abort inside
     NIS-Elements' own Job UI (ctx.shouldAbort() - only checked when `ctx`
-    isn't None, i.e. backend="mock"; "sdk"/"bridge" have no Job UI to abort
-    from), and the user clicking the "Stop / Abort Acquisition" button on
+    isn't None, i.e. backend="mock"; "sdk" has no Job UI to abort from),
+    and the user clicking the "Stop / Abort Acquisition" button on
     the web dashboard (dashboard.acquisition_status["abort_requested"]).
     Either one stops the run at the next check.
     """
@@ -207,13 +207,13 @@ def capture_image(nis, backend: str, channel: dict) -> Path | None:
     produce a real frame yet.
 
     Only backend="mock" returns a real file today (nis_mock.MockNIS.capture()
-    writes an actual image). "sdk"/"bridge" real image capture is a
-    separate TODO from the XY/Z stage control confirmed in nis_sdk.py -
-    the real NIS-Elements capture call for those backends hasn't been
-    identified yet, so there's nothing to call here for them. Once
-    confirmed, add the real call in an `if backend == "sdk": ...` branch
-    below so focus-check (see run_acquisition) has real frames on real
-    hardware too.
+    writes an actual image). "sdk" real image capture is a separate TODO
+    from the XY/Z stage control confirmed in nis_sdk.py - the real
+    NIS-Elements capture call is blocked on JOBS Editor licensing (see
+    acquisition/nis_jobs_capture.py for the documented plan and untested
+    stub). Once confirmed live, add the real call in an
+    `if backend == "sdk": ...` branch below so focus-check (see
+    run_acquisition) has real frames on real hardware too.
     """
     print(
         f"      Capturing channel '{channel['name']}' "
@@ -232,8 +232,8 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
     against the timepoint's first captured frame - the first timepoint sets
     the baseline, later ones are compared against it. Only meaningful when
     capture_image() actually returns a frame (backend="mock" today - see
-    its docstring); for "sdk"/"bridge" the check is skipped with a note,
-    since there's no real frame yet to check.
+    its docstring); for "sdk" the check is skipped with a note, since
+    there's no real frame yet to check.
 
     Returns the total number of images captured.
     """

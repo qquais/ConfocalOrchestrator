@@ -43,19 +43,20 @@ except ImportError:
 POSITIONS_FILE = Path(__file__).resolve().parent.parent / "protocols" / "stage_positions.json"
 
 # ── Backend design ────────────────────────────────────────────────────────
-# StagePositionManager can drive the stage through any of three backends,
-# selected via the `backend` constructor parameter, all kept long-term
-# side by side rather than replacing one with another:
-#   - "mock"   -> nis_mock.MockNIS (or the real `nis` module, if this
-#                 happens to be running on the microscope PC) - unchanged
-#                 default, for offline development with no hardware.
-#   - "bridge" -> nis_bridge.NISBridge - talks to REAL NIS-Elements stage
-#                 hardware via NIS's native macro language. Deprioritized
-#                 now that "sdk" is available, kept as a fallback.
-#   - "sdk"    -> nis_sdk.NISSdk - direct Ti2 ActiveX SDK bindings
-#                 (win32com/NkTi2Ax), confirmed against the Ti2-E Device
-#                 Simulator - see nis_sdk.py for how the property names
-#                 and units were confirmed.
+# StagePositionManager can drive the stage through either of two backends,
+# selected via the `backend` constructor parameter:
+#   - "mock" -> nis_mock.MockNIS (or the real `nis` module, if this
+#               happens to be running on the microscope PC) - unchanged
+#               default, for offline development with no hardware.
+#   - "sdk"  -> nis_sdk.NISSdk - direct Ti2 ActiveX SDK bindings
+#               (win32com/NkTi2Ax), confirmed against the Ti2-E Device
+#               Simulator - see nis_sdk.py for how the property names
+#               and units were confirmed.
+#
+# A third backend, "bridge" (nis_bridge.NISBridge - a native-macro file-
+# polling approach), was removed 2026-07-27: it never achieved a working
+# round-trip, and "sdk" fully superseded it once confirmed. See git
+# history if this approach is ever worth revisiting.
 
 
 def to_plain_float(value) -> float:
@@ -99,11 +100,9 @@ class StagePositionManager:
         """
         backend: "mock" (default - unchanged offline-dev behavior via the
             module-level `nis`, which is either the real `nis` module or
-            MockNIS depending on what was importable), "sdk" (real
+            MockNIS depending on what was importable), or "sdk" (real
             hardware via nis_sdk.NISSdk, the Ti2 ActiveX SDK - see
-            nis_sdk.py), or "bridge" (real hardware via the older
-            nis_bridge.NISBridge macro path, deprioritized now that "sdk"
-            is available).
+            nis_sdk.py).
         nis_module: explicit override, mainly for tests - if given, used
             as-is regardless of `backend`.
         """
@@ -114,11 +113,8 @@ class StagePositionManager:
         elif backend == "sdk":
             from nis_sdk import NISSdk
             self._nis = NISSdk()
-        elif backend == "bridge":
-            from nis_bridge import NISBridge
-            self._nis = NISBridge()
         else:
-            raise ValueError(f"Unknown backend '{backend}'. Expected 'mock', 'sdk', or 'bridge'.")
+            raise ValueError(f"Unknown backend '{backend}'. Expected 'mock' or 'sdk'.")
 
         self._positions_file = positions_file
         self._positions = self._load()

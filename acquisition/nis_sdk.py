@@ -5,12 +5,12 @@
 # the same connection pattern confirmed working in acquisition/nikon_test.py
 # against the Ti2-E Device Simulator.
 #
-# ConfocalOrchestrator has three stage-control backends, all exposing the
+# ConfocalOrchestrator has two stage-control backends, both exposing the
 # same shape of interface so stage_positions.py can swap between them via
-# its `backend` parameter - see nis_mock.py ("mock") and nis_bridge.py
-# ("bridge") for the other two. This is the "sdk" backend: direct ActiveX
-# bindings, now that Nikon has approved SDK access (see docs/microscope-
-# notes.md's "SDK Status").
+# its `backend` parameter - see nis_mock.py for the other one ("mock").
+# This is the "sdk" backend: direct ActiveX bindings, now that Nikon has
+# approved SDK access (see docs/microscope-notes.md's "SDK Status") -
+# confirmed end-to-end against the Ti2-E Device Simulator, 2026-07-27.
 #
 # CONFIRMED PROPERTIES (from .venv/Lib/site-packages/NkTi2Ax.py, the
 # generated bindings for the SDK's own type library - the same file that
@@ -53,9 +53,9 @@ Z_COUNTS_PER_UM = 100.0
 def to_plain_float(value) -> float:
     """Convert a numpy scalar (or anything float-like) to a plain Python float.
 
-    Matches the same convention used in nis_connection.py/nis_bridge.py/
-    stage_positions.py - values passed to a COM property setter must be
-    plain Python numbers, not numpy types.
+    Matches the same convention used in nis_connection.py/stage_positions.py -
+    values passed to a COM property setter must be plain Python numbers,
+    not numpy types.
     """
     return float(value)
 
@@ -63,9 +63,8 @@ def to_plain_float(value) -> float:
 class NISSdk:
     """Ti2 SDK (ActiveX) backend: real stage control via NkTi2Ax's
     iXPOSITION/iYPOSITION/iZPOSITION properties, matching the
-    XY_GetPosition/XY_Move/Z_GetPosition/Z_Move shape used by MockNIS and
-    NISBridge so StagePositionManager can use this backend interchangeably
-    with 'mock' and 'bridge'.
+    XY_GetPosition/XY_Move/Z_GetPosition/Z_Move shape used by MockNIS so
+    StagePositionManager can use this backend interchangeably with 'mock'.
     """
 
     def __init__(self):
