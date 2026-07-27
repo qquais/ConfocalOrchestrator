@@ -2,6 +2,17 @@
 
 An automated pipeline for confocal time-lapse imaging and analysis of *Physarum polycephalum*.
 
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![NumPy](https://img.shields.io/badge/NumPy-013243?logo=numpy&logoColor=white)
+![Pandas](https://img.shields.io/badge/Pandas-150458?logo=pandas&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?logo=opencv&logoColor=white)
+![scikit--image](https://img.shields.io/badge/scikit--image-F7931E)
+![Matplotlib](https://img.shields.io/badge/Matplotlib-11557C)
+![Cellpose](https://img.shields.io/badge/Cellpose-4B8BBE)
+![pywin32](https://img.shields.io/badge/pywin32-0078D4?logo=windows&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
 ## Status
 
 Analysis pipeline validated on real Physarum data. Acquisition side:
@@ -99,11 +110,13 @@ ConfocalOrchestrator/
 
 ## Tech Stack
 
-- Python 3.13
+- Python 3.12
 - nd2 — read Nikon ND2 files
 - Cellects — Physarum segmentation and shape tracking
 - Cellpose — nucleus segmentation (comparison)
 - OpenCV, NumPy, Pillow, pandas, matplotlib
+- FastAPI, uvicorn — acquisition dashboard web server
+- pywin32 — Ti2 ActiveX SDK bindings (Windows-only, acquisition side)
 
 ## Getting Started
 
@@ -116,3 +129,14 @@ pip install -r requirements.txt
 ```
 
 > Hardware integration status: real stage control is confirmed working end-to-end against the Ti2-E Device Simulator via the Ti2 ActiveX SDK (`--backend sdk`, see `acquisition/nis_sdk.py` and `docs/microscope-notes.md`). Real image capture is documented and ready to test (`acquisition/nis_jobs_capture.py`) but blocked on NIS-Elements' JOBS Editor being licensed on the install. Nothing here has been run against the real physical microscope yet.
+
+## License
+
+MIT License — `LICENSE` file to be added.
+
+## Acknowledgments
+
+- **Primary developer:** [Qurratul Ain Quais](https://github.com/qquais)
+- **Organization:** [Bionanomics](https://github.com/BioNanomics)
+- **Organization:** [Medical Informatics Engineering, Inc.](https://github.com/mieweb)
+- **Research advisor:** [Doug Horner](https://github.com/horner)
