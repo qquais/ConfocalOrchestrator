@@ -38,8 +38,8 @@ positions:
 z_stack:
   enabled: true
   num_slices: 2
-  z_start: -0.5
-  z_end: 0.5
+  z_start: 0.0
+  z_end: 1.0
   z_step: 1.0
 
 resolution:
@@ -54,7 +54,7 @@ channels:
     exposure_ms: 50
 
 timelapse:
-  interval_minutes: 0.05     # 3 seconds between timepoints
+  interval_minutes: 1        # 60 seconds between timepoints - long enough to click Abort mid-wait
   duration_hours: 1          # upper bound; total_timepoints below cuts it short
   total_timepoints: 4
 

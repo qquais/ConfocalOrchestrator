@@ -108,6 +108,93 @@ Implemented in `acquisition/nis_sdk.py` (`NISSdk` class — converts to/from
 plain microns at the API boundary) and wired into `StagePositionManager`
 as `backend="sdk"` (`acquisition/stage_positions.py`).
 
+**2026-07-27: confirmed end-to-end against the Ti2-E Device Simulator**,
+via `acquisition/run_protocol.py --backend sdk --protocol
+protocols/test_protocol_short.yaml` — full position → z-stack → channel
+loop, dashboard status updates, and the dashboard's Stop/Abort button
+(confirmed it actually halts the run at the next timepoint boundary —
+`should_abort()` is checked once per timepoint, not continuously, so
+abort takes effect after the current timepoint's `interval_minutes`
+wait finishes, not instantly). `capture_image()` correctly returns
+`None` for this backend — see "Image Capture" below.
+
+One real bug found and fixed along the way: `example_protocol.yaml`'s
+`z_stack.z_start: -1.0` (and `test_protocol_short.yaml`'s original
+`z_start: -0.5`), combined with `position.z: 0.0`, computed an absolute
+Z below the simulator's confirmed valid range (`iZPOSITION` is 0 to
+1,000,000 counts — it does not go negative), causing a COM
+`'Failed'` exception. Confirmed via real ND2 metadata (see "Real Sample
+Data" below) that real in-focus Z on the actual hardware sits around
+9000–9070 µm — `z: 0.0` was always a placeholder, never a real focus
+value. `test_protocol_short.yaml` was adjusted to a valid range
+(`z_start: 0.0, z_end: 1.0`) for simulator testing; `example_protocol.yaml`
+is left untouched since its real Z value still requires the biology
+team to confirm (already flagged as TODO in that file).
+
+## Image Capture — Investigation (issue #20)
+
+**Confirmed: the Ti2 SDK family has NO image-capture path, in any
+binding.** Exhaustively checked 2026-07-26/27 across every layer Nikon
+ships:
+- ActiveX (`NkTi2Ax.py` generated bindings)
+- Native C (`Ti2Mic_Interface.h` / `Ti2_Mic_Driver.dll`, from both the
+  sample project's bundled headers and the official encrypted SDK zip's
+  `include/` folder)
+- The official compiled help file (`NIKONTI2_E.chm`, decompiled and
+  searched in full)
+- A third binding style not previously checked, `Ti2_MicWrapper.Net`
+  (C# P/Invoke) — same ~16-function `MIC_*` surface, no capture entry
+  point
+
+All three binding styles wrap the exact same native `Ti2_Mic_Driver.dll`
+function set (`MIC_Open/Close`, `MIC_DataGet/DataSet`,
+`MIC_MetadataGet/Set`, `MIC_DedicatedCommand`, `MIC_Convert_*`) — stage/
+turret/objective control only. This is not a wrapper being behind the
+native SDK; the native driver itself has no capture capability.
+
+**Real capture only exists through NIS-Elements' own Jobs API** —
+specifically a `PythonScript` task chained after a `Capture` task inside
+a Job, which NIS-Elements invokes with an already-captured frame as
+`imgs[0]` (`imgs[0].array()` → numpy ndarray). Documented locally at
+`C:\Program Files\NIS-Elements\Docs\nis\eng_ar\task.system_section.html`.
+
+**Currently blocked: JOBS Editor is not licensed on this install**
+(NIS-Elements AR 6.10.01 — confirmed via the menu bar, 2026-07-27). The
+full planned approach, exact JOBS Explorer click-through steps, and an
+untested placeholder function are written up in
+`acquisition/nis_jobs_capture.py` — not wired into `run_protocol.py`,
+which still correctly returns `None` for `backend="sdk"`/`"bridge"`.
+Pick this up the moment JOBS Editor is licensed.
+
+## Real Sample Data (`data/nd2_sample/`)
+
+Two real ND2 files from an actual lab session (slime mold, dye trial),
+added 2026-07-27 — not simulator data. Read via the `nd2` Python package
+(now installed in `.venv`).
+
+- **`Dye Trial 1.nd2`**: 9 timepoints × 2 channels × 1024×1024, uint16.
+  2-minute time-lapse interval. Channel: Cy5 (excitation 640nm, emission
+  666nm) — matches "Channel 640" already in `example_protocol.yaml`.
+  Stage position: x=18821.2, y=1663.2, z=9066.68 µm.
+- **`Dye Trial Z1.nd2`**: a real 81-slice z-stack, 0.353 µm/slice,
+  `bottomToTop=True`, device `"Ti2 ZDrive"`, home index 40. Bottom slice
+  at z=9038.42 µm — so the real stack spans roughly z≈9038–9066 µm.
+
+**Confirms**: real in-focus Z on the actual hardware is ~9000–9070 µm,
+nowhere near 0 — validates that `z: 0.0` in both protocol files was
+always a placeholder (see the SDK confirmation entry above).
+
+**Caveats — don't over-read this data**: it's a "Dye Trial" (likely a
+calibration/focus-finding scan), not necessarily representative of the
+real 3-slice biofilm production protocol's intended z-stack shape (81
+slices / 0.353µm step here vs. 3 slices in `example_protocol.yaml`).
+Also, this is real **physical hardware** data — there is no confirmation
+that the Ti2-E Device Simulator's Z-axis origin lines up with the real
+Ti2-CTRE controller's origin, so these absolute Z numbers should not be
+assumed to transfer directly to simulator testing. Still useful as a
+real reference point for eventually confirming `example_protocol.yaml`'s
+TODO'd focus range with the biology team.
+
 ## Next Steps for Acquisition Engine
 
 Planned scripts under `acquisition/`:
@@ -115,9 +202,13 @@ Planned scripts under `acquisition/`:
 - `acquisition/nis_connection.py` → test stage connection (done)
 - `acquisition/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
 - `acquisition/run_protocol.py` → read YAML and run experiment (loop
-  structure done; not yet wired to the `sdk` backend or `focus_check.py`)
+  structure done; confirmed end-to-end against `backend="sdk"` including
+  abort, 2026-07-27 — see "Ti2 ActiveX SDK" above. Real capture for
+  `sdk`/`bridge` still blocked — see "Image Capture" below)
 - `acquisition/focus_check.py` → detect and correct focus drift (drift
-  detection done; not yet wired into `run_protocol.py`)
+  detection done, wired into `run_protocol.py` — runs for `backend="mock"`
+  today since that's the only backend with real frames; correctly skips
+  with a note for `sdk`/`bridge` until real capture is wired)
 - `acquisition/dashboard.py` → FastAPI live preview dashboard
 
 ## SDK Status
