@@ -43,5 +43,10 @@ output/
 
 docs/proposal.md
 
+# Local reference dump of the Nikon SDK portal's filelist.xlsx (see
+# NikonSDK/SDK-filelist.xlsx outside the repo) - quick-grep copy, not a
+# repo artifact
+sdk_filelist_dump.txt
+
 # Logs
 *.log
