@@ -9,6 +9,7 @@ mechanical signal running through the plasmodium.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -18,16 +19,25 @@ from scipy.stats import pearsonr
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INPUT_CSV = REPO_ROOT / "data" / "analysis" / "fluorescence" / "trajectories.csv"
-OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "synchronization"
-VELOCITY_CSV = OUTPUT_DIR / "velocity_over_time.csv"
-CORRELATION_CSV = OUTPUT_DIR / "correlation_matrix.csv"
-REPORT_TXT = OUTPUT_DIR / "sync_report.txt"
-PLOT_PNG = OUTPUT_DIR / "synchronization_analysis.png"
+DEFAULT_INPUT_CSV = REPO_ROOT / "data" / "analysis" / "fluorescence" / "trajectories.csv"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "synchronization"
 
 
 ALIGNMENT_THRESHOLD = 0.75
 MAJORITY_FRACTION = 0.60
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Analyze nucleus-movement synchronization from a trajectories CSV.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_CSV, help="trajectories.csv from fluorescence_pipeline.py")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to write reports/plots into")
+    return parser.parse_args()
+
+
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
 
 
 def load_trajectories(csv_path: Path) -> pd.DataFrame:
@@ -194,6 +204,7 @@ def make_visualization(
     correlation_matrix: pd.DataFrame,
     velocities: pd.DataFrame,
     events: list[dict[str, float | int]],
+    plot_png: Path,
 ) -> None:
     """Create a heatmap plus a time-series plot for the synchronization story."""
 
@@ -240,7 +251,7 @@ def make_visualization(
 
     fig.suptitle("Physarum nucleus synchronization analysis", fontsize=15)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
-    fig.savefig(PLOT_PNG, dpi=180, bbox_inches="tight")
+    fig.savefig(plot_png, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -252,6 +263,9 @@ def build_report(
     bottom_pairs: list[tuple[int, int, float]],
     mean_score: float,
     events: list[dict[str, float | int]],
+    velocity_csv: Path,
+    correlation_csv: Path,
+    plot_png: Path,
 ) -> str:
     """Write a concise human-readable summary of the synchronization results."""
 
@@ -304,25 +318,33 @@ def build_report(
     lines.append("")
     lines.append("Outputs")
     lines.append("-------")
-    lines.append(f"Velocity table: {VELOCITY_CSV}")
-    lines.append(f"Correlation matrix: {CORRELATION_CSV}")
-    lines.append(f"Visualization: {PLOT_PNG}")
+    lines.append(f"Velocity table: {velocity_csv}")
+    lines.append(f"Correlation matrix: {correlation_csv}")
+    lines.append(f"Visualization: {plot_png}")
 
     return "\n".join(lines)
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    input_csv = resolve_path(args.input)
+    output_dir = resolve_path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    trajectories = load_trajectories(INPUT_CSV)
+    velocity_csv = output_dir / "velocity_over_time.csv"
+    correlation_csv = output_dir / "correlation_matrix.csv"
+    report_txt = output_dir / "sync_report.txt"
+    plot_png = output_dir / "synchronization_analysis.png"
+
+    trajectories = load_trajectories(input_csv)
     velocities = calculate_velocities(trajectories)
     correlation_matrix = build_correlation_matrix(velocities)
     top_pairs, bottom_pairs, mean_score = summarize_pairs(correlation_matrix)
     events = detect_synchronization_events(velocities)
 
-    velocities.to_csv(VELOCITY_CSV, index=False)
-    correlation_matrix.to_csv(CORRELATION_CSV)
-    make_visualization(correlation_matrix, velocities, events)
+    velocities.to_csv(velocity_csv, index=False)
+    correlation_matrix.to_csv(correlation_csv)
+    make_visualization(correlation_matrix, velocities, events, plot_png)
 
     report_text = build_report(
         trajectories=trajectories,
@@ -332,8 +354,11 @@ def main() -> None:
         bottom_pairs=bottom_pairs,
         mean_score=mean_score,
         events=events,
+        velocity_csv=velocity_csv,
+        correlation_csv=correlation_csv,
+        plot_png=plot_png,
     )
-    REPORT_TXT.write_text(report_text + "\n", encoding="utf-8")
+    report_txt.write_text(report_text + "\n", encoding="utf-8")
 
     print(report_text)
 

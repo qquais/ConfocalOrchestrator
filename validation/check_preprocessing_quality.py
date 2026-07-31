@@ -20,10 +20,24 @@
 #
 # How to run (from the repo root, with .venv activated):
 #   python3 validation/check_preprocessing_quality.py
+#   python3 validation/check_preprocessing_quality.py --input <comparison.png> --output <dir>
 #
 # Requirements: numpy, pandas, Pillow, scikit-image (already installed)
+#
+# 2026-07: fixed foreground/background polarity. The original version
+# hardcoded "darker pixels = foreground," which assumes brightfield-style
+# data (dark nuclei on a light background). Real Physarum fluorescence
+# data is the opposite (bright sparse signal on a dark background) —
+# confirmed against real Dye Trial 1 data that this hardcoded assumption
+# marked 99.4% of the frame as "foreground," with the real bright puncta
+# showing up as small holes in the mask. Now:
+# whichever Otsu class has FEWER pixels is treated as foreground, since
+# foreground structures (nuclei or fluorescent signal) are the minority
+# of image area in both the synthetic and real cases — this doesn't
+# assume a fixed brightness direction.
 # -----------------------------------------------------------------------
 
+import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -31,17 +45,39 @@ from PIL import Image
 from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_COMPARISON_IMAGE = REPO_ROOT / "data" / "analysis" / "preprocessing" / "frame_0_preprocessed.png"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "validation"
+
+# Grid size used to check illumination uniformity (see Step 4).
+UNIFORMITY_GRID = 4  # 4x4 = 16 tiles across the image
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Check preprocessing quality via reference-free metrics.")
+    parser.add_argument(
+        "--input", type=Path, default=DEFAULT_COMPARISON_IMAGE,
+        help="Before/after comparison PNG from preprocess_nd2.py",
+    )
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to write results into")
+    return parser.parse_args()
+
+
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 # preprocess_nd2.py saves ONE image: the original (left half) and the
 # preprocessed result (right half) pasted side by side. We load that single
 # file and split it back into two arrays instead of re-running preprocessing.
-COMPARISON_IMAGE = "data/analysis/preprocessing/frame_0_preprocessed.png"
-OUTPUT_DIR = Path("data/analysis/validation")
+args = parse_args()
+COMPARISON_IMAGE = resolve_path(args.input)
+OUTPUT_DIR = resolve_path(args.output)
 REPORT_CSV = OUTPUT_DIR / "preprocessing_quality_report.csv"
 MASK_OVERLAY_IMAGE = OUTPUT_DIR / "otsu_mask_overlay.png"
-
-# Grid size used to check illumination uniformity (see Step 4).
-UNIFORMITY_GRID = 4  # 4x4 = 16 tiles across the image
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -65,8 +101,13 @@ print(f"  Each half size: {before.shape[1]} x {before.shape[0]} px")
 
 # ── STEP 2: Build a foreground/background mask from the ORIGINAL image ──────
 # We use Otsu's method to automatically pick a brightness threshold that best
-# separates two groups of pixels. Nuclei are dark on a light background, so
-# "foreground" = pixels darker than the threshold.
+# separates two groups of pixels. Foreground structures (nuclei in
+# brightfield, or fluorescent signal in fluorescence data) are the MINORITY
+# of image area either way, so we pick whichever side of the threshold has
+# fewer pixels as foreground — rather than assuming a fixed brightness
+# direction. Real fluorescence data is bright signal on a dark background
+# (the opposite of brightfield's dark nuclei on light background), so a
+# hardcoded "darker = foreground" gets this backwards on real data.
 #
 # Important: we compute this mask ONCE, from the ORIGINAL image, and reuse it
 # on both images. That keeps the comparison fair — we're always measuring
@@ -76,12 +117,16 @@ print("STEP 2 — Building a shared foreground/background mask (Otsu)")
 print("=" * 60)
 
 threshold = threshold_otsu(before)
-foreground_mask = before < threshold   # dark pixels = nuclei
+darker_mask = before < threshold
+lighter_mask = ~darker_mask
+# Minority class = foreground, regardless of which side of the threshold it's on.
+foreground_mask = darker_mask if darker_mask.sum() <= lighter_mask.sum() else lighter_mask
 background_mask = ~foreground_mask
 
 fg_fraction = foreground_mask.mean() * 100
 print(f"  Otsu threshold      : {threshold:.4f}")
-print(f"  Foreground (nuclei) : {fg_fraction:.1f}% of pixels")
+print(f"  Foreground polarity : {'darker' if foreground_mask is darker_mask else 'lighter'} pixels")
+print(f"  Foreground (signal) : {fg_fraction:.1f}% of pixels")
 print(f"  Background          : {100 - fg_fraction:.1f}% of pixels")
 
 

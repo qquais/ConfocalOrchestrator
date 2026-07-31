@@ -1,58 +1,110 @@
 # extract_frames.py
-# Extract every frame from an .ND2 file and save as PNG files.
-# Output: data/frames/img001.png, img002.png, ...
+# Extract every frame from an .ND2 file and save as PNG + TIFF files.
+# Output: <output>/img001.png, img002.png, ...  and  <output>/t000.tif, t001.tif, ...
 #
 # Run: python3 analysis/extract_frames.py
+#      python3 analysis/extract_frames.py --file "data/raw/Timelapse1.nd2" --channel 0
+#
+# 2026-07: fixed to handle multi-channel ND2 files. The original version only
+# handled (T,H,W)/(T,H,W,3)-shaped arrays and crashed with
+# "TypeError: Cannot handle this data type: (1, 1, 1024), |u1" on real Dye
+# Trial 1/Z1 data, because it treated the C axis as if it were the frame axis.
 
+import argparse
 import nd2
 import numpy as np
+import tifffile
 from PIL import Image
 from pathlib import Path
 
-ND2_FILE  = "data/raw/MRAP1 KO DN_10X03.nd2"
-OUTPUT_DIR = Path("data/frames")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ND2_FILE = REPO_ROOT / "data" / "raw" / "MRAP1 KO DN_10X03.nd2"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "frames"
 
-# Create output folder (mkdir -p equivalent)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-with nd2.ND2File(ND2_FILE) as f:
-    print(f"File dimensions: {f.sizes}")
-    images = f.asarray()   # load full array into memory
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Extract every frame from an ND2 file as PNG + TIFF.")
+    parser.add_argument("--file", type=Path, default=DEFAULT_ND2_FILE, help="Path to the .nd2 file")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to save frames into")
+    parser.add_argument(
+        "--channel",
+        type=int,
+        default=0,
+        help="Which channel to extract for multi-channel files (default: 0). "
+        "Ignored for RGB (S=3) or single-channel files.",
+    )
+    return parser.parse_args()
 
-print(f"Array shape: {images.shape}")
 
-# Build a list of 2D/3D frames to save.
-# The array axes depend on what the file contains:
-#   - Single image (Y, X) or (Y, X, 3): one frame
-#   - Time-lapse  (T, Y, X) or (T, Y, X, 3): T frames
-#   - Z-stack     (Z, Y, X) or (Z, Y, X, 3): Z frames
-#
-# Strategy: treat the first axis as the frame index.
-# If the array is only 2D (Y, X) or 3D (Y, X, 3) — it's a single frame.
+def resolve_path(path: Path) -> Path:
+    """Treat relative paths as repo-root paths so the script is easy to run from anywhere."""
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
 
-is_rgb = images.shape[-1] == 3 and images.ndim == 3   # shape is (Y, X, 3)
-is_single_2d = images.ndim == 2                        # shape is (Y, X)
 
-if is_rgb or is_single_2d:
-    # Only one frame in the file
-    frames = [images]
-else:
-    # Multiple frames along the first axis
-    frames = [images[i] for i in range(images.shape[0])]
+def main() -> None:
+    args = parse_args()
+    nd2_file = resolve_path(args.file)
+    output_dir = resolve_path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-print(f"Frames to save: {len(frames)}")
+    with nd2.ND2File(nd2_file) as f:
+        sizes = f.sizes
+        print(f"File dimensions: {sizes}")
+        images = f.asarray()
 
-for i, frame in enumerate(frames):
-    # Contrast-stretch each frame to 0-255 so it displays clearly
-    frame = frame.astype(np.float32)
-    lo, hi = frame.min(), frame.max()
-    if hi > lo:
-        frame = (frame - lo) / (hi - lo) * 255
-    frame = np.clip(frame, 0, 255).astype(np.uint8)
+    print(f"Array shape: {images.shape}")
 
-    # Name: img001.png, img002.png, ...
-    filename = OUTPUT_DIR / f"img{i+1:03d}.png"
-    Image.fromarray(frame).save(filename)
-    print(f"  Saved {filename}")
+    is_rgb = images.shape[-1] == 3 and images.ndim == 3
+    is_single_2d = images.ndim == 2
 
-print(f"\nDone. {len(frames)} PNG(s) saved to {OUTPUT_DIR}/")
+    if is_rgb or is_single_2d:
+        # Single frame, no time/z/channel axis to loop over.
+        frames = [images]
+    elif "C" in sizes:
+        # Real multi-channel file: pick one channel and loop over whatever the
+        # leading axis is (T for time-lapse, Z for a z-stack). f.sizes preserves
+        # axis order, so the C axis's position tells us how to index it.
+        axis_order = list(sizes.keys())
+        c_axis = axis_order.index("C")
+        if c_axis != 1:
+            raise ValueError(
+                f"Expected axis order (leading, C, Y, X, ...) but got {axis_order} "
+                f"for shape {images.shape} — extraction logic assumes C is the second axis."
+            )
+        n_channels = sizes["C"]
+        if not (0 <= args.channel < n_channels):
+            raise ValueError(f"--channel {args.channel} out of range; file has {n_channels} channel(s)")
+        frames = [images[i, args.channel] for i in range(images.shape[0])]
+        print(f"Extracting channel {args.channel} of {n_channels} across {len(frames)} leading-axis steps")
+    else:
+        # No C axis, no RGB — plain (T,H,W)/(Z,H,W) grayscale, original behavior.
+        frames = [images[i] for i in range(images.shape[0])]
+
+    print(f"Frames to save: {len(frames)}")
+
+    for i, frame in enumerate(frames):
+        # Raw 16-bit TIFF — this is what fluorescence_pipeline.py's --data flag
+        # globs for (t*.tif), so this output is directly consumable by it.
+        tifffile.imwrite(output_dir / f"t{i:03d}.tif", frame)
+
+        # Contrast-stretched 8-bit PNG — for quick viewing and as input to
+        # preprocess_nd2.py / segment_nd2.py.
+        f32 = frame.astype(np.float32)
+        lo, hi = f32.min(), f32.max()
+        if hi > lo:
+            png_frame = (f32 - lo) / (hi - lo) * 255
+        else:
+            png_frame = np.zeros_like(f32)
+        png_frame = np.clip(png_frame, 0, 255).astype(np.uint8)
+
+        filename = output_dir / f"img{i+1:03d}.png"
+        Image.fromarray(png_frame).save(filename)
+        print(f"  Saved {filename}")
+
+    print(f"\nDone. {len(frames)} frame(s) saved to {output_dir}/ (TIFF: t*.tif, PNG: img*.png)")
+
+
+if __name__ == "__main__":
+    main()

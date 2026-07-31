@@ -11,19 +11,40 @@
 #
 # Run (from the repo root, with .venv activated):
 #   python3 analysis/convert_to_ometiff.py
+#   python3 analysis/convert_to_ometiff.py --file "data/raw/Timelapse1.nd2" --output <dir>
 #
 # Requirements: nd2, tifffile, numpy (already installed)
 # ------------------------------------------------------------
 
+import argparse
 from datetime import datetime
 from pathlib import Path
 
 import nd2          # reads .ND2 files from Nikon microscopes
 import tifffile      # writes/reads OME-TIFF files
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ND2_FILE = REPO_ROOT / "data" / "raw" / "MRAP1 KO DN_10X03.nd2"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "ometiff"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Convert an ND2 file to OME-TIFF.")
+    parser.add_argument("--file", type=Path, default=DEFAULT_ND2_FILE, help="Path to the .nd2 file")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to write output.ome.tiff into")
+    return parser.parse_args()
+
+
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
-ND2_FILE = "data/raw/MRAP1 KO DN_10X03.nd2"
-OUTPUT_DIR = Path("data/analysis/ometiff")
+args = parse_args()
+ND2_FILE = resolve_path(args.file)
+OUTPUT_DIR = resolve_path(args.output)
 OUTPUT_FILE = OUTPUT_DIR / "output.ome.tiff"
 
 # Create the output folder if it doesn't exist yet (mkdir -p equivalent)

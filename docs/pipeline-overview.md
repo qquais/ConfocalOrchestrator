@@ -57,13 +57,13 @@ Trajectory CSV  (nucleus_id, frame, x, y, area) + a plot of the tracked paths
 | Script | Input | Output |
 |---|---|---|
 | `analysis/explore_nd2.py` | ND2 file | Metadata + first frame PNG |
-| `analysis/extract_frames.py` | ND2 file | Numbered PNGs in `data/frames/` |
+| `analysis/extract_frames.py` | ND2 file | Numbered PNGs + raw TIFFs in `data/frames/` |
 | `analysis/preprocess_nd2.py` | Raw frame | Denoised + background-corrected + speckle-filtered frame |
-| `analysis/fluorescence_pipeline.py` | Fluorescence TIFF frames | Cellpose-segmented nuclei, centroids, and a trajectory CSV + plot (full end-to-end demo pipeline) |
+| `analysis/fluorescence_pipeline.py` | Fluorescence TIFF frames | Cellpose-segmented nuclei, centroids, and a trajectory CSV + plot — **the maintained tracking pipeline** (`analysis/track_nuclei.py` is deprecated in its favor; see that file's header for why) |
 | `analysis/segment_nd2.py` | Single PNG | Cellpose segmentation overlay (organism/nucleus outlines) |
-| `analysis/track_nuclei.py` | PNG frame sequence | Per-nucleus trajectories CSV + visualization (Cellpose + trackpy) |
-| `analysis/cellects_pipeline.py` | TIFF or PNG folder | CSV + growth curve plot (Cellects — whole-organism shape tracking) |
-| `analysis/nd2_pipeline.py` | ND2 file | CSV + growth curve plot, no intermediate files saved |
+| `analysis/synchronization.py` | Trajectories CSV | Per-nucleus velocity correlation report + plots |
+| `analysis/cellects_pipeline.py` | TIFF or PNG folder | CSV + growth curve plot (Cellects — whole-organism shape tracking). **Currently blocked**: `cellects` requires Python ≥3.11, this project's venv is 3.9.25 |
+| `analysis/nd2_pipeline.py` | ND2 file | CSV + growth curve plot, no intermediate files saved. Same `cellects` block as above |
 | `analysis/convert_to_ometiff.py` | ND2 file | OME-TIFF (pixels + metadata bundled in one open format) |
 
 **Metrics tracked per frame:** area, perimeter, circularity, eccentricity, major/minor axis length, solidity.
@@ -97,7 +97,7 @@ Full spec sheet and confirmed NIS-Elements API notes: `docs/microscope-notes.md`
 ## 7. Status
 
 **Done:**
-- Analysis pipeline validated end-to-end on real fluorescence nuclear data (denoise → segment → track → CSV)
+- Analysis pipeline validated end-to-end on real fluorescence nuclear data (denoise → segment → track → CSV) — run against `Dye Trial 1.nd2`, `Dye Trial Z1.nd2`, and the 217-frame `Timelapse1.nd2`; see `results/Timelapse1/README.md`. Real per-nucleus tracking is currently limited to short windows (the fluorescent dye photobleaches within ~20 frames in the data seen so far) — whole-organism shape tracking over the full time-lapse (`cellects_pipeline.py`/`nd2_pipeline.py`) is architecturally a better fit for longer real runs but is blocked on a Python ≥3.11 requirement
 - Hardware specs and NIS-Elements Jobs API documented
 - Example imaging protocol captured from the biology team (`protocols/example_protocol.yaml`)
 - First stage-connection script written (`acquisition/nis_connection.py`)

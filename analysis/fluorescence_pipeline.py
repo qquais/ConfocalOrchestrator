@@ -255,7 +255,7 @@ def main() -> None:
             zorder=7,
         )
 
-    ax.set_title("30 Nuclei Tracked Across 10 Frames", fontsize=18, weight="bold")
+    ax.set_title(f"{n_kept} Nuclei Tracked Across {n_frames} Frames", fontsize=18, weight="bold")
     ax.set_xlabel("x (pixels)")
     ax.set_ylabel("y (pixels)")
     if start_handle is not None and end_handle is not None:
