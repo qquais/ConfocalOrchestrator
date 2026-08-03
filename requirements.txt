@@ -27,6 +27,9 @@ pandas
 matplotlib
 pytz
 
+# --- System ---
+pywin32
+
 # --- Image Processing & Analysis (future) ---
 # opencv-python
 
