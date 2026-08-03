@@ -25,7 +25,7 @@
 #       print(f"WARNING: possible focus drift ({result.percent_drop:.0%} sharpness drop)")
 #
 # Run this file directly for a demo (from the repo root, with .venv activated):
-#   python3 acquisition/focus_check.py
+#   python3 acquisition/monitoring/focus_check.py
 #
 # Requirements: scikit-image, numpy, Pillow, matplotlib (already installed)
 # ------------------------------------------------------------

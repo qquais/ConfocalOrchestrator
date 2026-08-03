@@ -5,13 +5,13 @@
 # developed and tested off the microscope PC.
 #
 # The real `nis` module only exists inside the NIS-Elements Python
-# environment on the microscope PC (see nis_connection.py). This mock
+# environment on the microscope PC (see nis_jobs_connection_test.py). This mock
 # reproduces the small subset of that API used by ConfocalOrchestrator -
 # XY/Z stage position, movement, and abort checks - as plain in-memory
 # state, so it can run anywhere.
 #
 # Swap it in for `import nis` during offline development, e.g.:
-#   from acquisition.nis_mock import MockNIS
+#   from acquisition.backends.nis_mock import MockNIS
 #   nis = MockNIS()
 # ------------------------------------------------------------
 
@@ -37,8 +37,8 @@ Z_MOVE_DELAY_SEC = 0.05
 # Sample frame copied by capture() to simulate a real image capture. Falls
 # back to a generated placeholder if this isn't present - data/ is
 # gitignored, so a fresh clone of the repo won't have it until fetched.
-SAMPLE_FRAME_PATH = Path(__file__).resolve().parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
-CAPTURE_DIR = Path(__file__).resolve().parent.parent / "data" / "captures"
+SAMPLE_FRAME_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
+CAPTURE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "captures"
 
 
 class _MockContext:

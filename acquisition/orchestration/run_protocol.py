@@ -21,9 +21,9 @@
 # 2026-07-27 - never achieved a working round-trip, superseded by "sdk".
 # See git history if ever worth revisiting.
 #
-# Run:
-#   python run_protocol.py                                    # mock, example protocol
-#   python run_protocol.py --backend sdk --protocol protocols/test_protocol_short.yaml
+# Run (from the repo root):
+#   python -m acquisition.orchestration.run_protocol                                    # mock, example protocol
+#   python -m acquisition.orchestration.run_protocol --backend sdk --protocol protocols/test_protocol_short.yaml
 # ------------------------------------------------------------
 
 import argparse
@@ -37,12 +37,12 @@ import uvicorn
 import yaml  # PyYAML - reads the .yaml protocol file into a Python dict
 from PIL import Image
 
-import dashboard  # this repo's acquisition/dashboard.py - shared status dict + web UI
-from focus_check import FocusMonitor
+from acquisition.monitoring import dashboard  # this repo's acquisition/monitoring/dashboard.py - shared status dict + web UI
+from acquisition.monitoring.focus_check import FocusMonitor
 
 # Path to the protocol file, relative to this script - matches the existing
 # acquisition/ + protocols/ folder layout. Overridable via --protocol.
-PROTOCOL_PATH = Path(__file__).resolve().parent.parent / "protocols" / "example_protocol.yaml"
+PROTOCOL_PATH = Path(__file__).resolve().parent.parent.parent / "protocols" / "example_protocol.yaml"
 
 
 # ── 1. Resolve the stage-control backend ─────────────────────────────────────
@@ -67,7 +67,7 @@ def resolve_backend(name: str):
             import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
             from nis import ctx
         except ImportError:
-            from nis_mock import MockNIS
+            from acquisition.backends.nis_mock import MockNIS
             nis = MockNIS()
             ctx = nis.ctx
             print(
@@ -76,7 +76,7 @@ def resolve_backend(name: str):
             )
         return nis, ctx
     elif name == "sdk":
-        from nis_sdk import NISSdk
+        from acquisition.backends.nis_sdk import NISSdk
         return NISSdk(), None
     else:
         raise ValueError(f"Unknown backend '{name}'. Expected 'mock' or 'sdk'.")
@@ -210,7 +210,7 @@ def capture_image(nis, backend: str, channel: dict) -> Path | None:
     writes an actual image). "sdk" real image capture is a separate TODO
     from the XY/Z stage control confirmed in nis_sdk.py - the real
     NIS-Elements capture call is blocked on JOBS Editor licensing (see
-    acquisition/nis_jobs_capture.py for the documented plan and untested
+    acquisition/planned/nis_jobs_capture.py for the documented plan and untested
     stub). Once confirmed live, add the real call in an
     `if backend == "sdk": ...` branch below so focus-check (see
     run_acquisition) has real frames on real hardware too.

@@ -102,16 +102,16 @@ mismatch (X and Z both match their spec exactly), but re-check against
 the real microscope if Y positions come out visibly wrong.
 
 Both property forms (`iXPOSITION` and `XPosition.Value`) return identical
-values — see `acquisition/nikon_stage_test.py` for the confirmation
+values — see `acquisition/calibration/nikon_stage_test.py` for the confirmation
 script. The property naming pattern matches `iTURRET1POS`/`Turret1Pos`,
-already confirmed working in `acquisition/nikon_test.py`.
+already confirmed working in `acquisition/calibration/nikon_connection_test.py`.
 
-Implemented in `acquisition/nis_sdk.py` (`NISSdk` class — converts to/from
+Implemented in `acquisition/backends/nis_sdk.py` (`NISSdk` class — converts to/from
 plain microns at the API boundary) and wired into `StagePositionManager`
-as `backend="sdk"` (`acquisition/stage_positions.py`).
+as `backend="sdk"` (`acquisition/orchestration/stage_positions.py`).
 
 **2026-07-27: confirmed end-to-end against the Ti2-E Device Simulator**,
-via `acquisition/run_protocol.py --backend sdk --protocol
+via `acquisition/orchestration/run_protocol.py --backend sdk --protocol
 protocols/test_protocol_short.yaml` — full position → z-stack → channel
 loop, dashboard status updates, and the dashboard's Stop/Abort button
 (confirmed it actually halts the run at the next timepoint boundary —
@@ -164,7 +164,7 @@ a Job, which NIS-Elements invokes with an already-captured frame as
 (NIS-Elements AR 6.10.01 — confirmed via the menu bar, 2026-07-27). The
 full planned approach, exact JOBS Explorer click-through steps, and an
 untested placeholder function are written up in
-`acquisition/nis_jobs_capture.py` — not wired into `run_protocol.py`,
+`acquisition/planned/nis_jobs_capture.py` — not wired into `run_protocol.py`,
 which still correctly returns `None` for `backend="sdk"`.
 Pick this up the moment JOBS Editor is licensed.
 
@@ -201,23 +201,23 @@ TODO'd focus range with the biology team.
 
 Planned scripts under `acquisition/`:
 
-- `acquisition/nis_connection.py` → test stage connection (done)
-- `acquisition/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
-- `acquisition/run_protocol.py` → read YAML and run experiment (loop
+- `acquisition/calibration/nis_jobs_connection_test.py` → test stage connection (done)
+- `acquisition/backends/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
+- `acquisition/orchestration/run_protocol.py` → read YAML and run experiment (loop
   structure done; confirmed end-to-end against `backend="sdk"` including
   abort, 2026-07-27 — see "Ti2 ActiveX SDK" above. Real capture for
   `sdk` still blocked — see "Image Capture" below)
-- `acquisition/focus_check.py` → detect and correct focus drift (drift
+- `acquisition/monitoring/focus_check.py` → detect and correct focus drift (drift
   detection done, wired into `run_protocol.py` — runs for `backend="mock"`
   today since that's the only backend with real frames; correctly skips
   with a note for `sdk` until real capture is wired)
-- `acquisition/dashboard.py` → FastAPI live preview dashboard
+- `acquisition/monitoring/dashboard.py` → FastAPI live preview dashboard
 
 ## SDK Status
 
 - NIS-Elements Jobs Python API confirmed available (separate from the
   ActiveX SDK below — this is the `nis` module used by
-  `nis_connection.py`/`run_protocol.py`'s Jobs-API path).
+  `nis_jobs_connection_test.py`/`run_protocol.py`'s Jobs-API path).
 - **2026-07-20: Ti2 SDK access approved.**
 - **Confirmed and implemented** — see "Ti2 ActiveX SDK — Confirmed Stage
   Control" above. Connection pattern, turret control, and XY/Z stage
