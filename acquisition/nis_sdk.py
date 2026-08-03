@@ -24,6 +24,7 @@
 #
 # UNITS (inferred, not stated anywhere explicit - the bindings just
 # declare a plain integer VARIANT, no unit metadata): cross-referencing
+
 # the simulator's reported Lower/Higher travel limits against
 # docs/microscope-notes.md's documented hardware spec ("Stroke X:
 # +/-57mm, Y: +/-36.5mm ... Focusing: min increment 0.01um, 10mm stroke"):
@@ -80,8 +81,18 @@ class NISSdk:
 
     def XY_Move(self, x: float, y: float) -> None:
         """Move the stage to an absolute (x, y) position, in microns."""
-        self._microscope.iXPOSITION = round(to_plain_float(x) * XY_COUNTS_PER_UM)
-        self._microscope.iYPOSITION = round(to_plain_float(y) * XY_COUNTS_PER_UM)
+        before = self.XY_GetPosition()
+        x_counts = round(to_plain_float(x) * XY_COUNTS_PER_UM)
+        y_counts = round(to_plain_float(y) * XY_COUNTS_PER_UM)
+        self._microscope.iXPOSITION = x_counts
+        self._microscope.iYPOSITION = y_counts
+        after = self.XY_GetPosition()
+        print(
+            f"[NISSdk] XY_Move: requested ({x:.2f}, {y:.2f}) um "
+            f"[counts ({x_counts}, {y_counts})] - before {before} - after {after} um"
+        )
+        if round(after[0] * XY_COUNTS_PER_UM) != x_counts or round(after[1] * XY_COUNTS_PER_UM) != y_counts:
+            print(f"[NISSdk] WARNING: XY_Move readback does not match requested counts!")
 
     def Z_GetPosition(self) -> float:
         """Return the current focus (z) position in microns."""
@@ -90,7 +101,16 @@ class NISSdk:
 
     def Z_Move(self, z: float) -> None:
         """Move focus to an absolute z position in microns."""
-        self._microscope.iZPOSITION = round(to_plain_float(z) * Z_COUNTS_PER_UM)
+        before = self.Z_GetPosition()
+        z_counts = round(to_plain_float(z) * Z_COUNTS_PER_UM)
+        self._microscope.iZPOSITION = z_counts
+        after = self.Z_GetPosition()
+        print(
+            f"[NISSdk] Z_Move: requested {z:.2f} um [counts {z_counts}] - "
+            f"before {before} um - after {after} um"
+        )
+        if round(after * Z_COUNTS_PER_UM) != z_counts:
+            print(f"[NISSdk] WARNING: Z_Move readback does not match requested counts!")
 
 
 if __name__ == "__main__":
