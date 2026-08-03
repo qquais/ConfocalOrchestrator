@@ -2,33 +2,33 @@
 # Uncomment / pip install packages as each part of the pipeline is actually built.
 
 # --- ND2 file reading (active) ---
-nd2
-numpy
-Pillow
+nd2==0.11.3
+numpy==2.5.1
+Pillow==12.3.0
 
 # --- Segmentation (active) ---
-cellpose
+cellpose==4.2.1.1
 
 # --- OME-TIFF conversion (active) ---
-tifffile
+tifffile==2026.7.31
 
 # --- Acquisition (active) ---
-PyYAML
-fastapi
-uvicorn
+PyYAML==6.0.3
+fastapi==0.141.1
+uvicorn==0.52.1
 
 # --- Acquisition (future) ---
 # aicsimageio
 
 # --- Image Processing & Analysis (active) ---
-scikit-image
-trackpy
-pandas
-matplotlib
-pytz
+scikit-image==0.26.0
+trackpy==0.7
+pandas==3.0.5
+matplotlib==3.11.1
+pytz==2026.3.post1
 
 # --- System ---
-pywin32
+pywin32==312
 
 # --- Image Processing & Analysis (future) ---
 # opencv-python
