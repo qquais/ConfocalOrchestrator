@@ -78,6 +78,7 @@ class MockNIS:
         self._y = float(y)
         self._z = float(z)
         self.ctx = _MockContext()
+        self._capture_count = 0
 
     def _check_xy_limits(self, x: float, y: float) -> None:
         if not -X_LIMIT_UM <= x <= X_LIMIT_UM:
@@ -148,17 +149,23 @@ class MockNIS:
 
     def capture(self) -> Path:
         """Simulate taking a frame: copy a sample frame to a new file with
-        a timestamp in the name (e.g. capture_20260717_143022.png), and
-        return its Path. Stands in for the real NIS-Elements image-capture
-        call (see the docstring above re: capture()'s unconfirmed real
-        signature).
+        a timestamp + sequence number in the name (e.g.
+        capture_20260717_143022_003.png), and return its Path. Stands in
+        for the real NIS-Elements image-capture call (see the docstring
+        above re: capture()'s unconfirmed real signature).
+
+        The sequence number is required because a timepoint's captures
+        (every position x z-slice x channel) happen well under a second
+        apart - a timestamp alone isn't unique and would silently
+        overwrite earlier frames in the same second.
 
         Falls back to generating a plain placeholder PNG if
         SAMPLE_FRAME_PATH isn't present on this machine.
         """
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        self._capture_count += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = CAPTURE_DIR / f"capture_{timestamp}.png"
+        dest = CAPTURE_DIR / f"capture_{timestamp}_{self._capture_count:04d}.png"
 
         if SAMPLE_FRAME_PATH.exists():
             shutil.copy(SAMPLE_FRAME_PATH, dest)
