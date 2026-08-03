@@ -5,7 +5,7 @@
 # you send a Stop/Abort request - all from a browser, without needing to be
 # at the microscope PC.
 #
-# This script runs FINE on a Mac (unlike nis_connection.py / run_protocol.py)
+# This script runs FINE on a Mac (unlike nis_jobs_connection_test.py / run_protocol.py)
 # because it doesn't talk to NIS-Elements at all. It only reads/writes the
 # `acquisition_status` dict below. Later, run_protocol.py (running on the
 # microscope PC) will import that dict and call `update_status(...)` as it
@@ -13,7 +13,7 @@
 # real run. For now, it starts in the "idle" state with placeholder values.
 #
 # Run (works right now, on Mac or the microscope PC):
-#   python acquisition/dashboard.py
+#   python acquisition/monitoring/dashboard.py
 # Then open http://localhost:8000 in a browser.
 # ------------------------------------------------------------
 
@@ -72,7 +72,7 @@ def get_elapsed_and_remaining_seconds():
 # acquisition is wired up, run_protocol.py can overwrite this same file (or
 # this path variable) with the actual latest captured frame.
 LATEST_FRAME_PATH = (
-    Path(__file__).resolve().parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
+    Path(__file__).resolve().parent.parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
 )
 
 app = FastAPI()
@@ -233,7 +233,7 @@ def get_dashboard() -> str:
     return DASHBOARD_HTML
 
 
-# ── 7. Run the dashboard with: python acquisition/dashboard.py ──────────────
+# ── 7. Run the dashboard with: python acquisition/monitoring/dashboard.py ───
 if __name__ == "__main__":
     import uvicorn
 

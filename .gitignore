@@ -43,8 +43,10 @@ output/
 
 docs/proposal.md
 
-# NIS bridge IPC files (transient, machine-local - see acquisition/nis_bridge.py)
-acquisition/bridge_data/
+# Local reference dump of the Nikon SDK portal's filelist.xlsx (see
+# NikonSDK/SDK-filelist.xlsx outside the repo) - quick-grep copy, not a
+# repo artifact
+sdk_filelist_dump.txt
 
 # Logs
 *.log

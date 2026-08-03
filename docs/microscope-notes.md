@@ -67,8 +67,10 @@ Source: [NIS-Elements AR Jobs Python API docs](https://www.nisoftware.net/NikonS
 
 ## Ti2 ActiveX SDK — Confirmed Stage Control (primary approach)
 
-Now the primary path for real stage control (see "SDK Status" below for
-how the bridge/macro approach compares). Connects via:
+Now the primary, only path for real stage control (see "SDK Status"
+below — the earlier native-macro bridge approach was removed 2026-07-27
+once this was fully confirmed; see git history if ever worth
+revisiting). Connects via:
 
 ```python
 microscope = win32com.client.Dispatch(NkTi2Ax.NikonTi2AxAutoConnectMicroscope.CLSID)
@@ -100,31 +102,122 @@ mismatch (X and Z both match their spec exactly), but re-check against
 the real microscope if Y positions come out visibly wrong.
 
 Both property forms (`iXPOSITION` and `XPosition.Value`) return identical
-values — see `acquisition/nikon_stage_test.py` for the confirmation
+values — see `acquisition/calibration/nikon_stage_test.py` for the confirmation
 script. The property naming pattern matches `iTURRET1POS`/`Turret1Pos`,
-already confirmed working in `acquisition/nikon_test.py`.
+already confirmed working in `acquisition/calibration/nikon_connection_test.py`.
 
-Implemented in `acquisition/nis_sdk.py` (`NISSdk` class — converts to/from
+Implemented in `acquisition/backends/nis_sdk.py` (`NISSdk` class — converts to/from
 plain microns at the API boundary) and wired into `StagePositionManager`
-as `backend="sdk"` (`acquisition/stage_positions.py`).
+as `backend="sdk"` (`acquisition/orchestration/stage_positions.py`).
+
+**2026-07-27: confirmed end-to-end against the Ti2-E Device Simulator**,
+via `acquisition/orchestration/run_protocol.py --backend sdk --protocol
+protocols/test_protocol_short.yaml` — full position → z-stack → channel
+loop, dashboard status updates, and the dashboard's Stop/Abort button
+(confirmed it actually halts the run at the next timepoint boundary —
+`should_abort()` is checked once per timepoint, not continuously, so
+abort takes effect after the current timepoint's `interval_minutes`
+wait finishes, not instantly). `capture_image()` correctly returns
+`None` for this backend — see "Image Capture" below.
+
+One real bug found and fixed along the way: `example_protocol.yaml`'s
+`z_stack.z_start: -1.0` (and `test_protocol_short.yaml`'s original
+`z_start: -0.5`), combined with `position.z: 0.0`, computed an absolute
+Z below the simulator's confirmed valid range (`iZPOSITION` is 0 to
+1,000,000 counts — it does not go negative), causing a COM
+`'Failed'` exception. Confirmed via real ND2 metadata (see "Real Sample
+Data" below) that real in-focus Z on the actual hardware sits around
+9000–9070 µm — `z: 0.0` was always a placeholder, never a real focus
+value. `test_protocol_short.yaml` was adjusted to a valid range
+(`z_start: 0.0, z_end: 1.0`) for simulator testing; `example_protocol.yaml`
+is left untouched since its real Z value still requires the biology
+team to confirm (already flagged as TODO in that file).
+
+## Image Capture — Investigation (issue #20)
+
+**Confirmed: the Ti2 SDK family has NO image-capture path, in any
+binding.** Exhaustively checked 2026-07-26/27 across every layer Nikon
+ships:
+- ActiveX (`NkTi2Ax.py` generated bindings)
+- Native C (`Ti2Mic_Interface.h` / `Ti2_Mic_Driver.dll`, from both the
+  sample project's bundled headers and the official encrypted SDK zip's
+  `include/` folder)
+- The official compiled help file (`NIKONTI2_E.chm`, decompiled and
+  searched in full)
+- A third binding style not previously checked, `Ti2_MicWrapper.Net`
+  (C# P/Invoke) — same ~16-function `MIC_*` surface, no capture entry
+  point
+
+All three binding styles wrap the exact same native `Ti2_Mic_Driver.dll`
+function set (`MIC_Open/Close`, `MIC_DataGet/DataSet`,
+`MIC_MetadataGet/Set`, `MIC_DedicatedCommand`, `MIC_Convert_*`) — stage/
+turret/objective control only. This is not a wrapper being behind the
+native SDK; the native driver itself has no capture capability.
+
+**Real capture only exists through NIS-Elements' own Jobs API** —
+specifically a `PythonScript` task chained after a `Capture` task inside
+a Job, which NIS-Elements invokes with an already-captured frame as
+`imgs[0]` (`imgs[0].array()` → numpy ndarray). Documented locally at
+`C:\Program Files\NIS-Elements\Docs\nis\eng_ar\task.system_section.html`.
+
+**Currently blocked: JOBS Editor is not licensed on this install**
+(NIS-Elements AR 6.10.01 — confirmed via the menu bar, 2026-07-27). The
+full planned approach, exact JOBS Explorer click-through steps, and an
+untested placeholder function are written up in
+`acquisition/planned/nis_jobs_capture.py` — not wired into `run_protocol.py`,
+which still correctly returns `None` for `backend="sdk"`.
+Pick this up the moment JOBS Editor is licensed.
+
+## Real Sample Data (`data/nd2_sample/`)
+
+Two real ND2 files from an actual lab session (slime mold, dye trial),
+added 2026-07-27 — not simulator data. Read via the `nd2` Python package
+(now installed in `.venv`).
+
+- **`Dye Trial 1.nd2`**: 9 timepoints × 2 channels × 1024×1024, uint16.
+  2-minute time-lapse interval. Channel: Cy5 (excitation 640nm, emission
+  666nm) — matches "Channel 640" already in `example_protocol.yaml`.
+  Stage position: x=18821.2, y=1663.2, z=9066.68 µm.
+- **`Dye Trial Z1.nd2`**: a real 81-slice z-stack, 0.353 µm/slice,
+  `bottomToTop=True`, device `"Ti2 ZDrive"`, home index 40. Bottom slice
+  at z=9038.42 µm — so the real stack spans roughly z≈9038–9066 µm.
+
+**Confirms**: real in-focus Z on the actual hardware is ~9000–9070 µm,
+nowhere near 0 — validates that `z: 0.0` in both protocol files was
+always a placeholder (see the SDK confirmation entry above).
+
+**Caveats — don't over-read this data**: it's a "Dye Trial" (likely a
+calibration/focus-finding scan), not necessarily representative of the
+real 3-slice biofilm production protocol's intended z-stack shape (81
+slices / 0.353µm step here vs. 3 slices in `example_protocol.yaml`).
+Also, this is real **physical hardware** data — there is no confirmation
+that the Ti2-E Device Simulator's Z-axis origin lines up with the real
+Ti2-CTRE controller's origin, so these absolute Z numbers should not be
+assumed to transfer directly to simulator testing. Still useful as a
+real reference point for eventually confirming `example_protocol.yaml`'s
+TODO'd focus range with the biology team.
 
 ## Next Steps for Acquisition Engine
 
 Planned scripts under `acquisition/`:
 
-- `acquisition/nis_connection.py` → test stage connection (done)
-- `acquisition/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
-- `acquisition/run_protocol.py` → read YAML and run experiment (loop
-  structure done; not yet wired to the `sdk` backend or `focus_check.py`)
-- `acquisition/focus_check.py` → detect and correct focus drift (drift
-  detection done; not yet wired into `run_protocol.py`)
-- `acquisition/dashboard.py` → FastAPI live preview dashboard
+- `acquisition/calibration/nis_jobs_connection_test.py` → test stage connection (done)
+- `acquisition/backends/nis_sdk.py` → real stage control via the Ti2 ActiveX SDK (done)
+- `acquisition/orchestration/run_protocol.py` → read YAML and run experiment (loop
+  structure done; confirmed end-to-end against `backend="sdk"` including
+  abort, 2026-07-27 — see "Ti2 ActiveX SDK" above. Real capture for
+  `sdk` still blocked — see "Image Capture" below)
+- `acquisition/monitoring/focus_check.py` → detect and correct focus drift (drift
+  detection done, wired into `run_protocol.py` — runs for `backend="mock"`
+  today since that's the only backend with real frames; correctly skips
+  with a note for `sdk` until real capture is wired)
+- `acquisition/monitoring/dashboard.py` → FastAPI live preview dashboard
 
 ## SDK Status
 
 - NIS-Elements Jobs Python API confirmed available (separate from the
   ActiveX SDK below — this is the `nis` module used by
-  `nis_connection.py`/`run_protocol.py`'s Jobs-API path).
+  `nis_jobs_connection_test.py`/`run_protocol.py`'s Jobs-API path).
 - **2026-07-20: Ti2 SDK access approved.**
 - **Confirmed and implemented** — see "Ti2 ActiveX SDK — Confirmed Stage
   Control" above. Connection pattern, turret control, and XY/Z stage
@@ -145,7 +238,7 @@ Planned scripts under `acquisition/`:
   (`...\Bionanomics 4.0.0.110\Github_ConfocalOrchestrator\ConfocalOrchestrator\...`).
   `torch`/`cellpose`/`scikit-image`/`trackpy`/`pandas`/`matplotlib`/`dask`/`nd2`
   are only needed by the image-analysis scripts, not acquisition/stage
-  control, so for bridge/stage testing only `fastapi`, `uvicorn`,
+  control, so for stage testing only `fastapi`, `uvicorn`,
   `PyYAML`, `Pillow`, `numpy` were installed. Enabling Windows long-path
   support (`HKLM`, needs admin, machine-wide) would fix this properly if
   the full analysis stack is needed later on this machine.
@@ -155,64 +248,18 @@ Planned scripts under `acquisition/`:
   `sys.path`. Run as a module from the repo root instead:
   `python -m acquisition.foo`.
 
-## Bridge Backend (`nis_bridge.py` + `bridge_command.mac`) — Status: Blocked, Deprioritized
+## Bridge Backend — Removed (2026-07-27)
 
-Attempted full round-trip testing 2026-07-20 (`MockNIS` baseline passed
-fine; this section is about the `bridge` backend specifically). Two real
-bugs were found and fixed along the way:
-
-1. **NIS macro declaration placement** — NIS's macro language does not
-   support variable declarations inside nested `{ }` blocks, only in one
-   flat block at the very top of the whole macro. The original macro
-   declared locals block-by-block (`if`/`while` bodies each had their own
-   declarations-first section) and failed with "Cannot Evaluate the
-   Expression" the first time it hit a nested declaration with a pending
-   command file. Fixed by flattening every local variable in
-   `bridge_command.mac` into one declaration block at the top of the
-   file.
-2. **Relative vs. absolute path** — `bridge_command.mac`'s `FOLDER`
-   constant was a relative path (`"bridge_data\\"`), resolved by
-   NIS-Elements against an unknown working directory that never matched
-   `nis_bridge.py`'s `BRIDGE_DIR` (`acquisition/bridge_data/`) — tried
-   and ruled out `acquisition/bridge_data`, `acquisition/macros/bridge_data`,
-   `C:\Program Files\NIS-Elements\Macros\bridge_data`, and
-   `C:\Program Files\NIS-Elements\bridge_data` as candidates for where
-   NIS was actually resolving the relative path to; none worked. Fixed
-   by hardcoding an absolute path in the macro matching `nis_bridge.py`.
-
-**After both fixes, still no working round-trip.** "Macro → Run Macro
-From File..." reports "finished, no errors" instantly instead of running
-the intended infinite polling loop. Isolated diagnostics (temporary
-`debug_probe.mac` / `debug_probe2.mac`, since deleted) ruled out:
-
-- The `bridge_data` path/OneDrive-nesting specifically (tried a trivial
-  `C:\` root path — same result).
-- The `while` loop / this macro's complexity specifically (a standalone
-  5-iteration bounded loop, no `bridge_data` involved, also finished
-  instantly with no output).
-- Even a single **unconditional, non-looping** `WriteFile()` call
-  produced no file and no error.
-
-**Root cause unresolved.** File I/O (or macro execution generally) isn't
-behaving as the [nisoftware.net Macro Functions
-reference](https://www.nisoftware.net/NikonSaleApplication/Help/Docs-D/eng_d/p4c11s19.html)
-describes, and neither NIS's UI nor these diagnostics surfaced why (no
-error dialog, no accessible console/log). Full details and exact test
-sequence are in `acquisition/macros/README.md`'s "Known issues" section.
-
-**Decision:** deprioritized in favor of the Ti2 SDK backend now that SDK
-access has been approved (see SDK Status above) — the bridge/macro
-approach was always meant as a stopgap "to get real stage data/control
-today while waiting on SDK approval," so with approval granted the SDK
-path is the intended one anyway. `nis_bridge.py`'s path/declaration fixes
-are left in place as real improvements even though the underlying issue
-is unresolved, in case this gets revisited later.
-
-**Still not working / open questions:**
-- Why does NIS report macro execution as instantly "finished, no errors"
-  even for a single `WriteFile()` call with no loop? (No SDK-side
-  console/debug output found yet to investigate further.)
-- `run_protocol.py` and `stage_positions.py` have **not** been tested
-  against the `bridge` backend as a result — that was blocked on this.
-  Both were confirmed working against the `mock` backend during the
-  original `MockNIS` baseline check.
+A native-macro, file-polling backend (`nis_bridge.py` +
+`bridge_command.mac`) was attempted 2026-07-20 as a stopgap for real
+stage control while Ti2 SDK access was still pending Nikon's approval.
+It never achieved a working round-trip — two real bugs were found and
+fixed (macro declaration placement, relative-path resolution), but File
+I/O inside NIS's macro language still silently no-op'd with no error,
+root cause never identified. Once Ti2 SDK access was approved and the
+`sdk` backend was confirmed as a full replacement (see "Ti2 ActiveX
+SDK" above), this backend was removed entirely (files, `--backend
+bridge` option, `bridge_data/` gitignore entry) rather than kept as
+unused dead code. Full investigation detail, exact bugs, and diagnostic
+steps are recoverable via `git log` / `git show` on this file and on
+`acquisition/nis_bridge.py` if this approach is ever worth revisiting.

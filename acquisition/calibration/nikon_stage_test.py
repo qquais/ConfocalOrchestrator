@@ -2,7 +2,7 @@
 # ------------------------------------------------------------
 # Confirmation script for XY/Z stage property names on the Ti2 ActiveX SDK.
 #
-# nikon_test.py already confirmed the connection pattern (win32com.client.
+# nikon_connection_test.py already confirmed the connection pattern (win32com.client.
 # Dispatch against NkTi2Ax.NikonTi2AxAutoConnectMicroscope.CLSID) and the
 # iTURRET1POS / Turret1Pos property shape. This script applies the same
 # pattern to the stage-position candidates found in the generated bindings
