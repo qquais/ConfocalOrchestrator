@@ -21,7 +21,7 @@ Acquisition produces the files that Analysis consumes — they don't need to run
 Protocol YAML (protocols/example_protocol.yaml)
         |
         v   describes: objective, positions, z-stack, channels, timing
-NIS-Elements SDK (acquisition/run_protocol.py)
+NIS-Elements SDK (acquisition/orchestration/run_protocol.py)
         |
         v   drives the stage, focus, and channels on the real microscope
 ND2 files saved (Nikon's native image format, one per position/z/channel/timepoint)
@@ -47,10 +47,10 @@ Trajectory CSV  (nucleus_id, frame, x, y, area) + a plot of the tracked paths
 
 | Script | What it does |
 |---|---|
-| `acquisition/nis_connection.py` | Smoke test — confirms the microscope PC's NIS-Elements Python API is reachable and the stage can be read/moved |
-| `acquisition/run_protocol.py` | Reads a protocol YAML and runs the full experiment: loops over every timepoint, stage position, z-slice, and channel, capturing an image at each step |
-| `acquisition/focus_check.py` | Safety net for overnight runs — measures image sharpness (Laplacian variance) each timepoint and flags if the focus has drifted |
-| `acquisition/dashboard.py` | Live web page (FastAPI) showing run progress and the latest captured frame, with a Stop/Abort button — so you can check on an overnight run remotely |
+| `acquisition/calibration/nis_jobs_connection_test.py` | Smoke test — confirms the microscope PC's NIS-Elements Python API is reachable and the stage can be read/moved |
+| `acquisition/orchestration/run_protocol.py` | Reads a protocol YAML and runs the full experiment: loops over every timepoint, stage position, z-slice, and channel, capturing an image at each step |
+| `acquisition/monitoring/focus_check.py` | Safety net for overnight runs — measures image sharpness (Laplacian variance) each timepoint and flags if the focus has drifted |
+| `acquisition/monitoring/dashboard.py` | Live web page (FastAPI) showing run progress and the latest captured frame, with a Stop/Abort button — so you can check on an overnight run remotely |
 
 ### Analysis
 
@@ -100,13 +100,13 @@ Full spec sheet and confirmed NIS-Elements API notes: `docs/microscope-notes.md`
 - Analysis pipeline validated end-to-end on real fluorescence nuclear data (denoise → segment → track → CSV)
 - Hardware specs and NIS-Elements Jobs API documented
 - Example imaging protocol captured from the biology team (`protocols/example_protocol.yaml`)
-- First stage-connection script written (`acquisition/nis_connection.py`)
+- First stage-connection script written (`acquisition/calibration/nis_jobs_connection_test.py`)
 - `run_protocol.py` written — reads a protocol YAML and runs the full timepoint/position/z-stack/channel loop
 - Live dashboard (`dashboard.py`) built and wired into `run_protocol.py`'s loop
 - Focus drift detection (`focus_check.py`) built and tested standalone
 
 **Pending:**
-- Remote Desktop access to the microscope PC, to actually test `run_protocol.py` and `nis_connection.py` against the real hardware (currently untested outside a dev laptop)
+- Remote Desktop access to the microscope PC, to actually test `run_protocol.py` and `nis_jobs_connection_test.py` against the real hardware (currently untested outside a dev laptop)
 - Wiring `focus_check.py` into `run_protocol.py`'s timepoint loop (currently a separate, untested integration)
 - Confirming several protocol placeholders with the biology team: dye/fluorophore names, laser power, exposure time per channel, real stage coordinates, and the exact meaning of the "S9CAI" filename tag
 - Confirming how the job-context object (`ctx`, used for abort checks) is actually obtained on the microscope PC

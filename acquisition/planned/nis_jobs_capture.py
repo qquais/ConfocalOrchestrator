@@ -21,7 +21,7 @@
 # MIC_MetadataGet/Set, MIC_DedicatedCommand, MIC_Convert_*) - stage,
 # turret, and objective control only. See docs/microscope-notes.md for
 # the stage-control side of this SDK, which IS confirmed working
-# (nis_sdk.py, backend="sdk").
+# (backends/nis_sdk.py, backend="sdk").
 #
 # Real image capture only exists through NIS-Elements' own Jobs API,
 # specifically its "PythonScript" task type - documented locally at

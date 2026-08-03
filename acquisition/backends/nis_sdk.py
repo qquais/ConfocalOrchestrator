@@ -2,25 +2,26 @@
 # ------------------------------------------------------------
 # Ti2 ActiveX SDK backend for stage control - real hardware via
 # win32com.client.Dispatch(NkTi2Ax.NikonTi2AxAutoConnectMicroscope.CLSID),
-# the same connection pattern confirmed working in acquisition/nikon_test.py
-# against the Ti2-E Device Simulator.
+# the same connection pattern confirmed working in
+# acquisition/calibration/nikon_connection_test.py against the Ti2-E Device Simulator.
 #
 # ConfocalOrchestrator has two stage-control backends, both exposing the
-# same shape of interface so stage_positions.py can swap between them via
-# its `backend` parameter - see nis_mock.py for the other one ("mock").
+# same shape of interface so orchestration/stage_positions.py can swap
+# between them via its `backend` parameter - see nis_mock.py for the
+# other one ("mock").
 # This is the "sdk" backend: direct ActiveX bindings, now that Nikon has
 # approved SDK access (see docs/microscope-notes.md's "SDK Status") -
 # confirmed end-to-end against the Ti2-E Device Simulator, 2026-07-27.
 #
 # CONFIRMED PROPERTIES (from .venv/Lib/site-packages/NkTi2Ax.py, the
 # generated bindings for the SDK's own type library - the same file that
-# defines iTURRET1POS/Turret1Pos, confirmed working in nikon_test.py):
+# defines iTURRET1POS/Turret1Pos, confirmed working in calibration/nikon_connection_test.py):
 #   iXPOSITION / iYPOSITION / iZPOSITION - direct properties, readable and
 #   writable, same shape as iTURRET1POS.
 #   XPosition / YPosition / ZPosition - child settings objects (.Value/
 #   .Lower/.Higher), same shape as Turret1Pos. Read-verified against the
-#   Ti2-E Device Simulator via acquisition/nikon_stage_test.py - both
-#   forms returned identical values.
+#   Ti2-E Device Simulator via acquisition/calibration/nikon_stage_test.py -
+#   both forms returned identical values.
 #
 # UNITS (inferred, not stated anywhere explicit - the bindings just
 # declare a plain integer VARIANT, no unit metadata): cross-referencing
@@ -54,7 +55,7 @@ Z_COUNTS_PER_UM = 100.0
 def to_plain_float(value) -> float:
     """Convert a numpy scalar (or anything float-like) to a plain Python float.
 
-    Matches the same convention used in nis_connection.py/stage_positions.py -
+    Matches the same convention used in calibration/nis_jobs_connection_test.py/orchestration/stage_positions.py -
     values passed to a COM property setter must be plain Python numbers,
     not numpy types.
     """

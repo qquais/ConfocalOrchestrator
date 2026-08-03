@@ -1,7 +1,9 @@
-# nis_connection.py
+# nis_jobs_connection_test.py
 # ------------------------------------------------------------
 # First acquisition module: connects to the NIS-Elements Python API and
-# tests basic stage control on the Nikon Eclipse Ti2-E.
+# tests basic stage control on the Nikon Eclipse Ti2-E. This is the
+# NIS-Elements Jobs-API connection path - separate from backends/nis_sdk.py's
+# ActiveX SDK path (see calibration/nikon_connection_test.py for that one).
 #
 # >>> Run this script ON the microscope PC, with NIS-Elements AR 6.20.02
 # >>> already open. The `nis` module is provided by NIS-Elements itself
@@ -14,7 +16,7 @@
 #
 # Run (on the microscope PC, from the NIS-Elements Python console or a
 # terminal with the NIS-Elements Python environment active):
-#   python nis_connection.py
+#   python nis_jobs_connection_test.py
 # ------------------------------------------------------------
 
 # ── 1. Connect to the NIS-Elements Python API ────────────────────────────────

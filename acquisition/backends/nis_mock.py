@@ -5,13 +5,13 @@
 # developed and tested off the microscope PC.
 #
 # The real `nis` module only exists inside the NIS-Elements Python
-# environment on the microscope PC (see nis_connection.py). This mock
+# environment on the microscope PC (see nis_jobs_connection_test.py). This mock
 # reproduces the small subset of that API used by ConfocalOrchestrator -
 # XY/Z stage position, movement, and abort checks - as plain in-memory
 # state, so it can run anywhere.
 #
 # Swap it in for `import nis` during offline development, e.g.:
-#   from acquisition.nis_mock import MockNIS
+#   from acquisition.backends.nis_mock import MockNIS
 #   nis = MockNIS()
 # ------------------------------------------------------------
 
@@ -37,8 +37,8 @@ Z_MOVE_DELAY_SEC = 0.05
 # Sample frame copied by capture() to simulate a real image capture. Falls
 # back to a generated placeholder if this isn't present - data/ is
 # gitignored, so a fresh clone of the repo won't have it until fetched.
-SAMPLE_FRAME_PATH = Path(__file__).resolve().parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
-CAPTURE_DIR = Path(__file__).resolve().parent.parent / "data" / "captures"
+SAMPLE_FRAME_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "analysis" / "nd2_sample" / "frame_0.png"
+CAPTURE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "captures"
 
 
 class _MockContext:
@@ -78,6 +78,7 @@ class MockNIS:
         self._y = float(y)
         self._z = float(z)
         self.ctx = _MockContext()
+        self._capture_count = 0
 
     def _check_xy_limits(self, x: float, y: float) -> None:
         if not -X_LIMIT_UM <= x <= X_LIMIT_UM:
@@ -148,17 +149,23 @@ class MockNIS:
 
     def capture(self) -> Path:
         """Simulate taking a frame: copy a sample frame to a new file with
-        a timestamp in the name (e.g. capture_20260717_143022.png), and
-        return its Path. Stands in for the real NIS-Elements image-capture
-        call (see the docstring above re: capture()'s unconfirmed real
-        signature).
+        a timestamp + sequence number in the name (e.g.
+        capture_20260717_143022_003.png), and return its Path. Stands in
+        for the real NIS-Elements image-capture call (see the docstring
+        above re: capture()'s unconfirmed real signature).
+
+        The sequence number is required because a timepoint's captures
+        (every position x z-slice x channel) happen well under a second
+        apart - a timestamp alone isn't unique and would silently
+        overwrite earlier frames in the same second.
 
         Falls back to generating a plain placeholder PNG if
         SAMPLE_FRAME_PATH isn't present on this machine.
         """
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        self._capture_count += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = CAPTURE_DIR / f"capture_{timestamp}.png"
+        dest = CAPTURE_DIR / f"capture_{timestamp}_{self._capture_count:04d}.png"
 
         if SAMPLE_FRAME_PATH.exists():
             shutil.copy(SAMPLE_FRAME_PATH, dest)

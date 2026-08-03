@@ -2,16 +2,16 @@
 # ------------------------------------------------------------
 # Stage position manager: save, list, and move to named XY/Z stage
 # positions on the Nikon Eclipse Ti2-E, on top of the NIS-Elements Python
-# API - or, off the microscope PC, acquisition/nis_mock.py's MockNIS, so
-# this module works for offline development too.
+# API - or, off the microscope PC, acquisition/backends/nis_mock.py's
+# MockNIS, so this module works for offline development too.
 #
 # Saved positions persist to protocols/stage_positions.json, so they can
 # be reused across sessions (e.g. to build up a protocol's `positions:`
 # list - see protocols/example_protocol.yaml).
 #
 # Run directly for a quick sanity check (works on Mac/Linux/Windows dev
-# machines via MockNIS, no NIS-Elements required):
-#   python acquisition/stage_positions.py
+# machines via MockNIS, no NIS-Elements required), from the repo root:
+#   python -m acquisition.orchestration.stage_positions
 # ------------------------------------------------------------
 
 import json
@@ -23,24 +23,24 @@ import yaml  # PyYAML - reads a protocol file's `positions:` list
 # spec) - imported unconditionally since nis_mock.py has no hardware
 # dependency of its own, so these constants are always available regardless
 # of whether the real `nis` module or MockNIS ends up being used below.
-from nis_mock import X_LIMIT_UM, Y_LIMIT_UM
+from acquisition.backends.nis_mock import X_LIMIT_UM, Y_LIMIT_UM
 
 # ── 1. Connect to the NIS-Elements Python API, or fall back to the mock ─────
-# Unlike nis_connection.py / run_protocol.py (which only ever run ON the
+# Unlike nis_jobs_connection_test.py / run_protocol.py (which only ever run ON the
 # microscope PC and hard-fail without the real API), this module is meant
 # to be usable for offline development too, so it falls back to MockNIS
 # when the real `nis` module isn't available.
 try:
     import nis  # NIS-Elements' own Python API module (only available on the microscope PC)
 except ImportError:
-    from nis_mock import MockNIS
+    from acquisition.backends.nis_mock import MockNIS
     nis = MockNIS()
     print(
         "'nis' module not found - using MockNIS (offline/dev mode). "
         "Positions below will not move a real stage."
     )
 
-POSITIONS_FILE = Path(__file__).resolve().parent.parent / "protocols" / "stage_positions.json"
+POSITIONS_FILE = Path(__file__).resolve().parent.parent.parent / "protocols" / "stage_positions.json"
 
 # ── Backend design ────────────────────────────────────────────────────────
 # StagePositionManager can drive the stage through either of two backends,
@@ -50,13 +50,8 @@ POSITIONS_FILE = Path(__file__).resolve().parent.parent / "protocols" / "stage_p
 #               default, for offline development with no hardware.
 #   - "sdk"  -> nis_sdk.NISSdk - direct Ti2 ActiveX SDK bindings
 #               (win32com/NkTi2Ax), confirmed against the Ti2-E Device
-#               Simulator - see nis_sdk.py for how the property names
-#               and units were confirmed.
-#
-# A third backend, "bridge" (nis_bridge.NISBridge - a native-macro file-
-# polling approach), was removed 2026-07-27: it never achieved a working
-# round-trip, and "sdk" fully superseded it once confirmed. See git
-# history if this approach is ever worth revisiting.
+#               Simulator - see backends/nis_sdk.py for how the property
+#               names and units were confirmed.
 
 
 def to_plain_float(value) -> float:
@@ -111,7 +106,7 @@ class StagePositionManager:
         elif backend == "mock":
             self._nis = nis
         elif backend == "sdk":
-            from nis_sdk import NISSdk
+            from acquisition.backends.nis_sdk import NISSdk
             self._nis = NISSdk()
         else:
             raise ValueError(f"Unknown backend '{backend}'. Expected 'mock' or 'sdk'.")
@@ -204,7 +199,7 @@ class StagePositionManager:
         ValueError if the saved position is outside the stage's travel
         limits (see validate_position) - e.g. from a hand-edited positions
         file. Callers driving real hardware (not MockNIS) should confirm
-        with the user before calling this - the same way nis_connection.py
+        with the user before calling this - the same way nis_jobs_connection_test.py
         and run_protocol.py confirm before any stage move.
         """
         if label not in self._positions:
@@ -242,7 +237,7 @@ if __name__ == "__main__":
 
     print(f"\nPositions saved to: {POSITIONS_FILE}")
 
-    protocol_path = Path(__file__).resolve().parent.parent / "protocols" / "example_protocol.yaml"
+    protocol_path = Path(__file__).resolve().parent.parent.parent / "protocols" / "example_protocol.yaml"
     print(f"\nLoading positions from {protocol_path}...")
     print(" ", manager.load_positions_from_yaml(protocol_path))
 
