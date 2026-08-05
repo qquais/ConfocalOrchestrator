@@ -19,8 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mcp.server.mcpserver import MCPServer
 
 from mcp_server import acquisition_tools as tools
+from mcp_server import analysis_tools as analysis
 
 mcp = MCPServer("ConfocalOrchestrator")
+
+# ── Acquisition tools (control/read the microscope stage) ───────────────
 
 # Read-only tools (no safety gate)
 mcp.add_tool(tools.get_position)
@@ -41,6 +44,27 @@ mcp.add_tool(tools.go_to_saved_position)
 mcp.add_tool(tools.define_position)
 mcp.add_tool(tools.load_positions_from_yaml)
 mcp.add_tool(tools.delete_saved_position)
+
+# ── Analysis tools (post-acquisition image processing, no hardware) ─────
+
+# Read-only
+mcp.add_tool(analysis.inspect_nd2_metadata)
+
+# Conversion / extraction
+mcp.add_tool(analysis.convert_nd2_to_ometiff)
+mcp.add_tool(analysis.extract_nd2_frames)
+
+# Preprocessing / segmentation
+mcp.add_tool(analysis.preprocess_frame)
+mcp.add_tool(analysis.segment_nuclei_image)
+
+# Shape-metrics / tracking pipelines
+mcp.add_tool(analysis.compute_shape_metrics)
+mcp.add_tool(analysis.track_nuclei_sequence)
+
+# Cross-sequence analysis
+mcp.add_tool(analysis.analyze_synchronization)
+mcp.add_tool(analysis.compare_trajectory_sequences)
 
 
 if __name__ == "__main__":
