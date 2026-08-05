@@ -15,6 +15,7 @@
 # ------------------------------------------------------------
 
 import json
+import sys
 from pathlib import Path
 
 import yaml  # PyYAML - reads a protocol file's `positions:` list
@@ -35,9 +36,13 @@ try:
 except ImportError:
     from acquisition.backends.nis_mock import MockNIS
     nis = MockNIS()
+    # stderr, not stdout - this module is imported by mcp_server/server.py,
+    # whose stdout is the MCP stdio JSON-RPC channel; anything else written
+    # there corrupts the protocol stream.
     print(
         "'nis' module not found - using MockNIS (offline/dev mode). "
-        "Positions below will not move a real stage."
+        "Positions below will not move a real stage.",
+        file=sys.stderr,
     )
 
 POSITIONS_FILE = Path(__file__).resolve().parent.parent.parent / "protocols" / "stage_positions.json"
