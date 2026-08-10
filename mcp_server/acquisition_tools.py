@@ -11,6 +11,15 @@
 # check_focus_drift, get_live_status) and save_current (reads hardware but
 # never moves it) are ungated.
 #
+# Z FOCUS: move_z_absolute/move_z_relative exist below for internal/
+# scripted use (e.g. run_protocol.py) but are deliberately NOT registered
+# as MCP tools in server.py - a blind absolute Z jump risks crashing the
+# objective into the sample, and that action simply isn't reachable from
+# a chat prompt. nudge_focus_offset() is the MCP-exposed alternative: it
+# only fine-tunes an already-engaged PFS hardware focus lock by a small,
+# range-capped amount (see nis_sdk.PFS_MAX_OFFSET_STEP_FRACTION), so it
+# can't blindly jump focus from an arbitrary starting position.
+#
 # Image capture is intentionally NOT exposed here - acquisition/planned/
 # nis_jobs_capture.py is unconfirmed/non-functional prep material.
 # ------------------------------------------------------------
@@ -147,6 +156,17 @@ def save_current(label: str, backend: str = "mock") -> dict:
     return manager.save_current(label)
 
 
+def get_pfs_status() -> dict:
+    """Return Nikon PFS (Perfect Focus System) hardware focus-lock status:
+    whether it's currently enabled/locked, its raw status code, current
+    offset, and the offset's valid range. Real hardware only - no mock
+    PFS. Read-only - no confirmation required.
+    """
+    from acquisition.backends.nis_sdk import NISSdk
+
+    return NISSdk().pfs_status()
+
+
 # ── Move/write tools (gated - see _require_confirm_for_sdk) ─────────────
 
 
@@ -227,6 +247,40 @@ def go_to_saved_position(label: str, backend: str = "mock", confirm: bool = Fals
     _require_confirm_for_sdk(backend, confirm)
     manager = StagePositionManager(backend=backend)
     return manager.go_to(label)
+
+
+def nudge_focus_offset(delta_counts: float, confirm: bool = False) -> dict:
+    """Fine-tune focus by a small amount via Nikon's PFS hardware focus
+    lock - NOT by moving Z to an absolute position.
+
+    Requires PFS to already be enabled/locked (check with get_pfs_status
+    first) - this only nudges the existing lock's offset, it can never
+    move focus from an arbitrary/unknown starting position the way
+    move_z_absolute could. Each call is capped to a small fraction of the
+    SDK's own reported valid offset range (see
+    nis_sdk.PFS_MAX_OFFSET_STEP_FRACTION) - this is the safe, MCP-exposed
+    way to adjust focus; move_z_absolute/move_z_relative are intentionally
+    not available as tools here (see this module's top-of-file comment).
+
+    Real hardware only (no mock PFS) - requires confirm=True, same gate
+    as the other real-hardware write tools.
+
+    KNOWN LIMITATION (unconfirmed as of 2026-08-10): writes have been
+    observed to silently no-op on real hardware while PFS is locked - see
+    the TODO on NISSdk.nudge_pfs_offset for details. The call itself is
+    still safe (worst case it does nothing), but don't assume a returned
+    offset_before/offset_after pair means the physical focus moved -
+    check they actually differ.
+    """
+    if not confirm:
+        raise PermissionError(
+            "nudge_focus_offset controls real microscope hardware and "
+            "requires confirm=True. Refusing to proceed without explicit "
+            "confirmation."
+        )
+    from acquisition.backends.nis_sdk import NISSdk
+
+    return NISSdk().nudge_pfs_offset(delta_counts)
 
 
 # ── Write tools with no hardware contact (ungated) ───────────────────────

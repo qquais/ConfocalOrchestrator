@@ -32,13 +32,19 @@ mcp.add_tool(tools.compute_sharpness)
 mcp.add_tool(tools.check_focus_drift)
 mcp.add_tool(tools.get_live_status)
 mcp.add_tool(tools.save_current)
+mcp.add_tool(tools.get_pfs_status)
 
-# Move/write tools - backend="mock" by default, backend="sdk" requires confirm=True
+# Move/write tools - backend="mock" by default, backend="sdk" requires confirm=True.
+# move_z_absolute/move_z_relative are deliberately NOT registered here - a
+# blind absolute Z jump risks crashing the objective into the sample, and
+# that action simply shouldn't be reachable from a chat prompt. Use
+# nudge_focus_offset instead: it only fine-tunes an already-engaged PFS
+# hardware focus lock by a small, range-capped amount. See this file's
+# and acquisition_tools.py's top-of-file comments for the full rationale.
 mcp.add_tool(tools.move_xy_absolute)
-mcp.add_tool(tools.move_z_absolute)
 mcp.add_tool(tools.move_xy_relative)
-mcp.add_tool(tools.move_z_relative)
 mcp.add_tool(tools.go_to_saved_position)
+mcp.add_tool(tools.nudge_focus_offset)
 
 # Write tools with no hardware contact (no safety gate)
 mcp.add_tool(tools.define_position)
