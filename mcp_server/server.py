@@ -45,6 +45,7 @@ mcp.add_tool(tools.move_xy_absolute)
 mcp.add_tool(tools.move_xy_relative)
 mcp.add_tool(tools.go_to_saved_position)
 mcp.add_tool(tools.nudge_focus_offset)
+mcp.add_tool(tools.abort_run)
 
 # Write tools with no hardware contact (no safety gate)
 mcp.add_tool(tools.define_position)

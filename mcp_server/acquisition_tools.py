@@ -26,6 +26,7 @@
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from acquisition.monitoring.focus_check import compute_sharpness as _compute_sha
 from acquisition.orchestration.stage_positions import StagePositionManager
 
 DASHBOARD_STATUS_URL = "http://localhost:8000/status"
+DASHBOARD_ABORT_URL = "http://localhost:8000/abort"
 
 
 def _get_backend(backend: str):
@@ -281,6 +283,47 @@ def nudge_focus_offset(delta_counts: float, confirm: bool = False) -> dict:
     from acquisition.backends.nis_sdk import NISSdk
 
     return NISSdk().nudge_pfs_offset(delta_counts)
+
+
+def abort_run(token: str, confirm: bool = False) -> dict:
+    """Request that a running acquisition (started via run_protocol.py) stop
+    at its next per-timepoint check, by POSTing to the running dashboard's
+    /abort endpoint (acquisition/monitoring/dashboard.py).
+
+    token: the abort token printed by run_protocol.py/dashboard.py at
+        startup (dashboard.ABORT_TOKEN) - the dashboard rejects /abort
+        without it, since it's otherwise LAN-reachable with no auth.
+
+    Requires confirm=True - this stops a real, possibly hours-long
+    acquisition run, same safety-gate pattern as the hardware move tools
+    even though it doesn't go through backend="sdk"/_require_confirm_for_sdk
+    directly. Raises ConnectionError if no dashboard is reachable, or
+    PermissionError if the token is wrong.
+    """
+    if not confirm:
+        raise PermissionError(
+            "abort_run stops a real, possibly hours-long acquisition run and "
+            "requires confirm=True. Refusing to proceed without explicit "
+            "confirmation."
+        )
+    url = f"{DASHBOARD_ABORT_URL}?token={urllib.parse.quote(token)}"
+    request = urllib.request.Request(url, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise PermissionError(
+                "Dashboard rejected the abort token - check it matches the "
+                "token printed when the dashboard/run_protocol.py started."
+            ) from e
+        raise
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        raise ConnectionError(
+            f"Could not reach the acquisition dashboard at {DASHBOARD_ABORT_URL} - "
+            "is run_protocol.py running? "
+            f"Underlying error: {e}"
+        ) from e
 
 
 # ── Write tools with no hardware contact (ungated) ───────────────────────
