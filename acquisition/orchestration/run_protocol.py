@@ -27,6 +27,7 @@
 # ------------------------------------------------------------
 
 import argparse
+import math
 import threading
 import time
 from datetime import datetime
@@ -39,6 +40,14 @@ from PIL import Image
 
 from acquisition.monitoring import dashboard  # this repo's acquisition/monitoring/dashboard.py - shared status dict + web UI
 from acquisition.monitoring.focus_check import FocusMonitor
+
+# Imported from nis_mock (not nis_sdk) specifically because nis_mock has no
+# hardware dependency (pywin32/NkTi2Ax) and is always importable, even on
+# non-Windows dev machines using --backend mock - nis_sdk is only ever
+# imported lazily, inside resolve_backend()'s "sdk" branch. Both modules
+# deliberately keep these values in sync (see nis_mock.py's comment) so
+# using nis_mock's here is equivalent to nis_sdk's for chunking purposes.
+from acquisition.backends.nis_mock import MAX_XY_STEP_UM, MAX_Z_STEP_UM
 
 # Path to the protocol file, relative to this script - matches the existing
 # acquisition/ + protocols/ folder layout. Overridable via --protocol.
@@ -133,7 +142,7 @@ def start_dashboard_server() -> None:
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    print("Dashboard running at http://localhost:8000 (or http://<this-pc-ip>:8000 remotely)")
+    dashboard.print_startup_banner()
 
 
 # ── 2. Load the protocol file ────────────────────────────────────────────────
@@ -182,6 +191,49 @@ def confirm_start() -> bool:
     print("  correctly loaded before continuing.")
     answer = input("  Type 'yes' to start the acquisition, anything else to cancel: ").strip().lower()
     return answer == "yes"
+
+
+# ── Break large moves into safe sub-steps ────────────────────────────────────
+# nis_sdk.NISSdk and nis_mock.MockNIS both cap a single XY_Move/Z_Move call
+# to MAX_XY_STEP_UM/MAX_Z_STEP_UM (2026-08-10 safety fix) - meant for
+# ad-hoc, individually-approved MCP/chat commands, where a caller
+# requesting a huge jump in one call is treated as a likely mistake. That
+# doesn't fit this script's safety model: confirm_start() already makes
+# the user confirm the ENTIRE protocol (specific positions, from a
+# human-authored YAML file) once before any motion starts, so a big jump
+# between two already-confirmed positions isn't an unreviewed action -
+# it's just a move the cap wasn't designed to reject. Without chunking,
+# the first over-cap move (very likely: the first z-slice at a new
+# position, if its base_z differs from wherever the previous position's
+# z-stack ended) throws, which run_acquisition()'s per-timepoint
+# try/except then treats as "abandon the rest of this timepoint" -
+# silently skipping most of the planned work instead of failing loudly.
+def move_xy_stepped(nis, x: float, y: float) -> None:
+    """Move to an absolute (x, y) position, breaking it into sub-moves of
+    at most MAX_XY_STEP_UM each if the direct distance exceeds that."""
+    start_x, start_y = nis.XY_GetPosition()
+    distance = ((x - start_x) ** 2 + (y - start_y) ** 2) ** 0.5
+    if distance <= MAX_XY_STEP_UM:
+        nis.XY_Move(x, y)
+        return
+    steps = math.ceil(distance / MAX_XY_STEP_UM)
+    for i in range(1, steps + 1):
+        frac = i / steps
+        nis.XY_Move(start_x + (x - start_x) * frac, start_y + (y - start_y) * frac)
+
+
+def move_z_stepped(nis, z: float) -> None:
+    """Move to an absolute z position, breaking it into sub-moves of at
+    most MAX_Z_STEP_UM each if the direct distance exceeds that."""
+    start_z = nis.Z_GetPosition()
+    distance = abs(z - start_z)
+    if distance <= MAX_Z_STEP_UM:
+        nis.Z_Move(z)
+        return
+    steps = math.ceil(distance / MAX_Z_STEP_UM)
+    for i in range(1, steps + 1):
+        frac = i / steps
+        nis.Z_Move(start_z + (z - start_z) * frac)
 
 
 # ── 4. Work out the Z positions for one z-stack ──────────────────────────────
@@ -288,13 +340,13 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
 
                 x = to_plain_float(position["x"])
                 y = to_plain_float(position["y"])
-                nis.XY_Move(x, y)
+                move_xy_stepped(nis, x, y)
 
                 # ── Step through the z-stack at this position ────────────
                 z_slices = get_z_slices(position, z_stack)
                 for z_index, z in enumerate(z_slices, start=1):
                     print(f"    Z-slice {z_index}/{len(z_slices)}: Z={z:.2f} um")
-                    nis.Z_Move(z)
+                    move_z_stepped(nis, z)
 
                     # ── Capture every channel at this z-slice ─────────────
                     for channel in channels:

@@ -206,13 +206,27 @@ class StagePositionManager:
         file. Callers driving real hardware (not MockNIS) should confirm
         with the user before calling this - the same way nis_jobs_connection_test.py
         and run_protocol.py confirm before any stage move.
+
+        XY moves first, then Z - if Z_Move then fails (e.g. nis_sdk's
+        per-call step-size safety cap, since a saved position's Z commonly
+        differs from the current Z by more than that cap allows), XY is
+        moved back to where it started before re-raising, so a failed
+        go_to() never leaves the stage at a mismatched half-moved
+        position. This means a large Z difference requires getting there
+        in smaller confirmed steps rather than one go_to() call - that's
+        intentional, not a bug to work around.
         """
         if label not in self._positions:
             raise KeyError(f"No saved position named '{label}'. Known positions: {list(self._positions)}")
         position = self._positions[label]
         validate_position(position["x"], position["y"])
+        original_x, original_y = self._nis.XY_GetPosition()
         self._nis.XY_Move(position["x"], position["y"])
-        self._nis.Z_Move(position["z"])
+        try:
+            self._nis.Z_Move(position["z"])
+        except Exception:
+            self._nis.XY_Move(original_x, original_y)
+            raise
         return position
 
     def delete(self, label: str) -> None:

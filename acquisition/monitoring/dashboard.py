@@ -17,11 +17,37 @@
 # Then open http://localhost:8000 in a browser.
 # ------------------------------------------------------------
 
+import os
+import secrets
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+
+# ── 0. Abort token ────────────────────────────────────────────────────────
+# The server binds to 0.0.0.0 (see bottom of file / run_protocol.py's
+# start_dashboard_server()) so it's reachable from other devices on the lab
+# network - deliberately, so a run can be checked on/aborted from a phone
+# without needing to be at the microscope PC. But that also means anyone
+# else on the same network could hit POST /abort with no auth at all and
+# immediately stop a real, possibly hours-long run. /status and /frame stay
+# open (read-only, low stakes, and this keeps casual monitoring frictionless) -
+# only /abort requires this token, checked with a timing-safe comparison.
+# Override with the DASHBOARD_TOKEN env var to set/share a fixed token
+# instead of a fresh random one each run.
+ABORT_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(16)
+
+
+def _check_abort_token(token: str | None) -> None:
+    if token is None or not secrets.compare_digest(token, ABORT_TOKEN):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing or invalid abort token - open the dashboard via "
+            "the full URL printed at startup (with ?token=... included), "
+            "not just http://host:8000/",
+        )
+
 
 # ── 1. Shared in-memory status dict ──────────────────────────────────────────
 # This is the ONE place acquisition state lives. No database - just a plain
@@ -103,13 +129,18 @@ def get_frame() -> FileResponse:
 
 # ── 5. POST /abort -> request the acquisition to stop ────────────────────────
 @app.post("/abort")
-def post_abort() -> JSONResponse:
+def post_abort(token: str | None = None) -> JSONResponse:
     """Set the abort flag so a running acquisition can stop at its next check.
+
+    Requires the correct abort token (see ABORT_TOKEN above) as a ?token=
+    query param - raises 403 without it, since this is the one destructive
+    action this dashboard exposes on an otherwise-open, LAN-reachable server.
 
     NOTE: this only sets a flag in this dashboard's shared dict. Once
     run_protocol.py is wired up to read it (alongside its existing
     ctx.shouldAbort() check), setting this flag will actually stop the scope.
     """
+    _check_abort_token(token)
     acquisition_status["abort_requested"] = True
     acquisition_status["status"] = "aborted"
     return JSONResponse({"ok": True, "message": "Abort requested."})
@@ -158,6 +189,11 @@ DASHBOARD_HTML = """
   </table>
 
   <button id="abort-btn" onclick="sendAbort()">Stop / Abort Acquisition</button>
+  <div id="token-warning" style="display:none; color:#c0392b; margin-top:8px; font-size:0.9em;">
+    No abort token in this page's URL - Stop/Abort will be rejected. Reopen
+    the full link (with ?token=...) printed in the terminal that started
+    this dashboard.
+  </div>
 
   <script>
     // Colors for each possible status value, used on the badge above.
@@ -168,6 +204,13 @@ DASHBOARD_HTML = """
       error: "#c0392b",
       aborted: "#e67e22",
     };
+
+    // Read straight from this page's own URL - the token is never baked
+    // into the served HTML, only supplied by whoever loads the full link.
+    const ABORT_TOKEN = new URLSearchParams(window.location.search).get("token");
+    if (!ABORT_TOKEN) {
+      document.getElementById("token-warning").style.display = "block";
+    }
 
     // Turn a number of seconds into an "Hh Mm Ss" style string for display.
     function formatSeconds(totalSeconds) {
@@ -213,7 +256,11 @@ DASHBOARD_HTML = """
     // Ask the user to confirm, then tell the backend to abort the run.
     async function sendAbort() {
       if (!confirm("Stop the current acquisition run?")) return;
-      await fetch("/abort", { method: "POST" });
+      const url = "/abort" + (ABORT_TOKEN ? "?token=" + encodeURIComponent(ABORT_TOKEN) : "");
+      const response = await fetch(url, { method: "POST" });
+      if (!response.ok) {
+        alert("Abort was rejected (" + response.status + ") - this page's URL is missing a valid token.");
+      }
       refreshStatus();
     }
 
@@ -234,7 +281,17 @@ def get_dashboard() -> str:
 
 
 # ── 7. Run the dashboard with: python acquisition/monitoring/dashboard.py ───
+def print_startup_banner(port: int = 8000) -> None:
+    """Print the dashboard URL and the full abort-token URL, the same way
+    run_protocol.py's start_dashboard_server() does - call this from
+    anywhere the server gets started so the token is never silently only
+    in memory."""
+    print(f"Dashboard running at http://localhost:{port} (or http://<this-pc-ip>:{port} remotely)")
+    print(f"To be able to Stop/Abort from this browser, open: http://localhost:{port}/?token={ABORT_TOKEN}")
+
+
 if __name__ == "__main__":
     import uvicorn
 
+    print_startup_banner()
     uvicorn.run(app, host="0.0.0.0", port=8000)

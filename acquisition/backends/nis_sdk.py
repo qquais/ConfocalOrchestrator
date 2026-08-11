@@ -67,6 +67,29 @@ Z_COUNTS_PER_UM = 100.0
 MAX_XY_STEP_UM = 5000.0
 MAX_Z_STEP_UM = 50.0
 
+# Direct scalar properties making up an "optical configuration" (objective,
+# filters, light path, illumination) - confirmed present in NkTi2Ax.py's
+# INikonTi2AxMicroscope interface, same source as the stage properties
+# above. Used by get_optical_configuration()/apply_optical_configuration()
+# below - see acquisition/orchestration/imaging_profile.py for the
+# save/list/apply-by-experiment-name layer on top of these two methods.
+OPTICAL_CONFIG_PROPERTIES = [
+    "iNOSEPIECE",       # objective (turret slot 1-6)
+    "iDIC_PRISM",
+    "iDIC_POLARIZER",
+    "iANALYZER_POS",
+    "iANALYZER_SLOT",
+    "iLIGHTPATH",
+    "iCONDENSER",
+    "iOPTZOOM",
+    "iTURRET1POS", "iTURRET1SHUTTER",
+    "iTURRET2POS", "iTURRET2SHUTTER",
+    "iDLED1_POS", "iDLED1_SWITCH",
+    "iDLED2_POS", "iDLED2_SWITCH",
+    "iDLED3_POS", "iDLED3_SWITCH",
+    "iDLED4_POS", "iDLED4_SWITCH",
+]
+
 # PFS offset units aren't calibrated to microns (unlike XY/Z - see the
 # module docstring), so nudge_pfs_offset's cap is expressed as a fraction
 # of the SDK's own reported valid range (PfsOffset.Lower/.Higher) rather
@@ -287,17 +310,13 @@ class NISSdk:
                 "offset_scale": m.PfsOffset.Scale,
                 "objective_model": objective.Model,
                 "objective_magnification": objective.Magnification,
-                # Unit NOT confirmed - unlike XY/Z (calibrated against a
-                # known simulator move) and unlike unit-labeled SDK fields
-                # like PfsOffset.Unit, WorkingDistance's unit isn't stated
-                # by the type library. A value of 4.0 for a 10x objective
-                # is consistent with millimeters (real Plan Apo lambda D
-                # 10x specs are ~4-6mm WD) and NOT microns - deliberately
-                # not naming this field "_um" to avoid asserting an
-                # unverified unit. Confirm against Nikon's spec sheet for
-                # this exact objective before using this for any Z-safety
-                # calculation.
-                "working_distance_raw": objective.WorkingDistance,
+                # CONFIRMED millimeters, 2026-08-10 - cross-referenced
+                # against C:\ProgramData\Laboratory Imaging\Platform\AX
+                # Confocal\Objectives.xml, NIS-Elements' own objective
+                # catalog, which reports this same 10x objective's
+                # WorkingDistance as 4000 in explicit microns - matching
+                # this property's raw value of 4.0 at a 1000x ratio.
+                "working_distance_mm": objective.WorkingDistance,
             }
 
         return self._thread.call(read)
@@ -358,6 +377,63 @@ class NISSdk:
             return {"offset_before": current, "offset_after": m.iPFS_OFFSET}
 
         return self._thread.call(do_nudge)
+
+    # ── Optical configuration snapshot/replay ────────────────────────────
+    # Not related to XY/Z stage safety - these are device/optics settings
+    # (objective, filters, light path, illumination), not physical stage
+    # travel, so none of the move-safety caps above apply here. Applying a
+    # config does still physically move things (turret rotation, filter
+    # wheels) - it's not purely passive, just not stage-collision risk the
+    # way an uncapped Z move is.
+
+    def get_optical_configuration(self) -> dict:
+        """Snapshot the current optical/device configuration - objective
+        (nosepiece), DIC prism/polarizer, analyzer, light path, condenser,
+        zoom, both filter turrets, and the 4 D-LEDI illumination channels -
+        as a dict of raw SDK property values. Save this (e.g. to a JSON
+        file) and pass it to apply_optical_configuration() later to
+        reproduce the same setup.
+
+        Property semantics (e.g. whether iDLED1_POS is an intensity
+        percent or something else) are NOT independently calibrated the
+        way XY/Z/PFS units were (see this module's docstring for that
+        methodology) - this assumes reading then writing back the same
+        raw value reproduces the same NIS-Elements UI state, which is
+        reasonable since these are exactly the properties NIS's own
+        "Optical Configuration" presets are built from, but it hasn't
+        been verified against a known physical reference the way stage
+        position was.
+        """
+
+        def read(m):
+            return {name: getattr(m, name) for name in OPTICAL_CONFIG_PROPERTIES}
+
+        return self._thread.call(read)
+
+    def apply_optical_configuration(self, config: dict) -> dict:
+        """Write back a config dict from get_optical_configuration().
+
+        Only keys in OPTICAL_CONFIG_PROPERTIES are applied - unknown keys
+        (e.g. from a config saved by a newer version of this code) are
+        silently ignored rather than erroring. Returns the read-back
+        value of every property actually applied.
+
+        Switching the objective (iNOSEPIECE) changes working distance,
+        which may invalidate prior Z-safety assumptions for whatever
+        position you're at - this method never touches Z itself, that's
+        on the caller to handle deliberately afterward if needed.
+        """
+
+        def write(m):
+            applied = {}
+            for name, value in config.items():
+                if name not in OPTICAL_CONFIG_PROPERTIES:
+                    continue
+                setattr(m, name, value)
+                applied[name] = getattr(m, name)
+            return applied
+
+        return self._thread.call(write)
 
 
 if __name__ == "__main__":
