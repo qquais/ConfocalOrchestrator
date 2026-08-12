@@ -36,16 +36,31 @@
 # takes - contrast with start_protocol_run in acquisition_tools.py, which
 # already returns immediately because it launches a background process).
 #
-# VERIFIED vs EXPERIMENTAL (per docs/pipeline-overview.md's Status section
-# and each wrapped module's own docstring - not re-verified here against
-# real Physarum data as part of this change):
-#   VERIFIED on real Physarum fluorescence nuclear data (denoise -> segment
-#   -> track, end-to-end): preprocess_frame, segment_nuclei_image,
-#   track_nuclei_sequence, and analyze_synchronization (operates on
-#   track_nuclei_sequence's own output; analysis/synchronization.py's
-#   docstring is written specifically in terms of Physarum nuclei).
-#   Format/metadata-only, not data-dependent: inspect_nd2_metadata,
-#   convert_nd2_to_ometiff, extract_nd2_frames.
+# VERIFIED vs EXPERIMENTAL (updated 2026-08-12 after re-testing against real
+# data in D:\Intern Projects\Slime Mold (Physarum polycephalum) - do NOT use
+# "Nathan Capture Tutorial.nd2" from that folder as a reference dataset, it's
+# a test/tutorial capture, not representative real data):
+#   CONFIRMED against real Physarum data (Timelapse 1.nd2, Cy5 channel,
+#   T=217): extract_nd2_frames (also fixed here - see its own docstring),
+#   segment_nuclei_image, track_nuclei_sequence (also fixed here - see its
+#   own code comment on the search_range NaN bug). On a 15-frame/Cy5 slice
+#   this produced 19 raw detections -> 3 kept trajectories (avg length 3.0
+#   frames) sitting on real bright puncta, not noise - low yield, but that
+#   matches how dim/sparse this particular dye trial's signal actually is
+#   (raw pixel values 0-137 out of the full uint16 range), not a pipeline
+#   defect. inspect_nd2_metadata and convert_nd2_to_ometiff are format/
+#   metadata-only and were also confirmed (Arabidopsis + Physarum files).
+#   NOT CONFIRMED as claimed - CORRECTION: this module previously cited
+#   docs/pipeline-overview.md's "validated end-to-end on real fluorescence
+#   nuclear data" line to mark preprocess_frame/analyze_synchronization as
+#   verified too. That doc doesn't name which file, and the one real
+#   DAPI-nuclei file available here (the tutorial capture above) produced 0
+#   kept trajectories - not because of a bug, but because Physarum is a
+#   multinucleate syncytium and at that capture's zoom the nuclei form one
+#   continuous diffuse mass, not separable blobs Cellpose can detect. Treat
+#   preprocess_frame and analyze_synchronization as EXPERIMENTAL again until
+#   confirmed against a real file, and get the actual validated dataset's
+#   path from the team before re-marking anything verified on this basis.
 #   EXPERIMENTAL - not confirmed against real Physarum data: compute_shape_metrics
 #   (Cellects whole-organism shape path - pipeline-overview.md only confirms
 #   the denoise/segment/track path, not this one) and
@@ -166,8 +181,22 @@ def convert_nd2_to_ometiff(nd2_path: str, output_path: str = None) -> dict:
 
 
 def extract_nd2_frames(nd2_path: str, output_dir: str = "data/frames") -> dict:
-    """Extract every frame from a .ND2 file (single image, time-lapse, or
-    Z-stack) and save each as a contrast-stretched PNG.
+    """Extract every frame from a .ND2 file (single image, time-lapse,
+    Z-stack, multi-channel, or any combination of those) and save each as a
+    contrast-stretched PNG.
+
+    nd2's .asarray() puts the two spatial axes (Y, X - or Y, X, 3 for RGB)
+    last, with every other axis (T, Z, C, ...) leading, so every leading
+    axis is flattened together into one frame index in that axis order -
+    e.g. for a (T=9, C=2, Y, X) file: img001=T0C0, img002=T0C1, img003=T1C0,
+    img004=T1C1, ... . Use inspect_nd2_metadata first to know each file's
+    actual axis order/sizes before assuming what a given frame number is.
+
+    KNOWN LIMITATION (fixed 2026-08-12): an earlier version of this function
+    only sliced the first axis, so it silently produced the wrong image
+    shape (crashing with a PIL TypeError) on any file with more than one
+    leading axis (e.g. a real time-lapse) - confirmed against real Physarum
+    data (T=9, C=2) before and after this fix.
     """
     import nd2
     import numpy as np
@@ -179,9 +208,13 @@ def extract_nd2_frames(nd2_path: str, output_dir: str = "data/frames") -> dict:
     with nd2.ND2File(nd2_path) as f:
         images = f.asarray()
 
-    is_rgb = images.shape[-1] == 3 and images.ndim == 3
-    is_single_2d = images.ndim == 2
-    frames = [images] if (is_rgb or is_single_2d) else [images[i] for i in range(images.shape[0])]
+    is_rgb = images.ndim >= 3 and images.shape[-1] == 3
+    if is_rgb:
+        height, width, n_channels = images.shape[-3], images.shape[-2], images.shape[-1]
+        frames = list(images.reshape(-1, height, width, n_channels))
+    else:
+        height, width = images.shape[-2], images.shape[-1]
+        frames = list(images.reshape(-1, height, width))
 
     saved_paths = []
     for i, frame in enumerate(frames):
@@ -582,7 +615,11 @@ def track_nuclei_sequence(
         if detections.empty:
             search_range = 15
         else:
-            diam_est = np.sqrt(detections.loc[detections["frame"] == 0, "area"].median() / np.pi) * 2
+            # Median over ALL detected nuclei, not just frame 0 - frame 0 alone
+            # can have zero detections (e.g. out of focus / sparse at t=0) even
+            # when later frames don't, which previously left this NaN and
+            # crashed int(NaN) - confirmed against real DAPI Physarum data.
+            diam_est = np.sqrt(detections["area"].median() / np.pi) * 2
             search_range = max(15, int(diam_est * 2))
 
     if detections.empty:
