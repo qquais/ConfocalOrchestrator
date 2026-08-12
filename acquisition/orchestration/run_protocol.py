@@ -180,6 +180,8 @@ def print_summary(protocol: dict) -> None:
         f"interval {interval} min ({'continuous' if interval == 0 else 'delayed'} between cycles)"
     )
     print(f"Save to:     {protocol['output']['save_directory']}")
+    profile_name = protocol.get("imaging_profile")
+    print(f"Imaging profile: {profile_name if profile_name else '(none - using current microscope setup)'}")
     print("=" * 60)
 
 
@@ -420,6 +422,29 @@ def main():
         return
 
     nis, ctx = resolve_backend(args.backend)
+
+    # ── Apply this experiment's imaging profile, if the protocol names one ──
+    # Still behind the confirm_start() gate above - applying a profile
+    # physically moves the turret/filter wheels, same safety class as stage
+    # motion (see nis_sdk.NISSdk.apply_optical_configuration's docstring).
+    imaging_profile_name = protocol.get("imaging_profile")
+    if imaging_profile_name:
+        if args.backend == "sdk":
+            from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+            print(f"\nApplying imaging profile '{imaging_profile_name}'...")
+            try:
+                applied = ImagingProfileManager().apply(imaging_profile_name)
+            except FileNotFoundError as e:
+                print(f"Failed to apply imaging profile: {e}")
+                return
+            for name, value in applied.items():
+                print(f"  {name}: {value}")
+        else:
+            print(
+                f"\nSkipping imaging profile '{imaging_profile_name}' - "
+                "imaging_profile.py is SDK/real-hardware only, no mock equivalent."
+            )
 
     start_dashboard_server()
 
