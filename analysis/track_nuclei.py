@@ -1,8 +1,22 @@
 # track_nuclei.py
 # -----------------------------------------------------------------------
-# Individual nucleus tracking pipeline — the core analysis step.
+# DEPRECATED — use analysis/fluorescence_pipeline.py instead.
 #
-# PIPELINE OVERVIEW
+# This script was a synthetic-data demo (it fakes a time-lapse by copying
+# one frame N times) and predates real multi-frame ND2 data. It has two
+# real bugs, confirmed against real Dye Trial 1/Z1 Physarum data:
+#   - uses Cellpose model_type="nuclei", which detected 0 nuclei on real
+#     fluorescence data (fluorescence_pipeline.py's default model does not
+#     have this problem)
+#   - has no guard for zero detections before calling trackpy.link(), so it
+#     crashes with KeyError: 'frame' on any frame with 0 detections
+# fluorescence_pipeline.py is the maintained implementation: it already
+# loads real multi-frame data, uses the model that actually works on real
+# data, and has the empty-detections guard this script lacks. Left in
+# place (not deleted) only because older docs may still reference it —
+# do not build new work on top of this file.
+#
+# PIPELINE OVERVIEW (as originally written, synthetic-data demo)
 # -----------------
 #   frame_0.png  (copied N times to simulate a time-lapse)
 #       |
@@ -10,9 +24,6 @@
 #       v  Step 2 — regionprops extracts centroids (x, y) per nucleus
 #       v  Step 3 — trackpy links the SAME nucleus across frames → trajectories
 #       v  Step 4 — Save CSV  +  visualisation
-#
-# When you have real ND2 time-lapse frames, replace the frame-list creation
-# in Step 1 with actual file loading — everything else stays the same.
 #
 # How to run (from the repo root, with .venv activated):
 #   python3 analysis/track_nuclei.py

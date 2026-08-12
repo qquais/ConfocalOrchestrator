@@ -8,10 +8,12 @@
 #
 # Run (from the repo root, with .venv activated):
 #   python3 analysis/preprocess_nd2.py
+#   python3 analysis/preprocess_nd2.py --input <frame.png> --output <dir>
 #
 # Requirements: scikit-image, numpy, Pillow (already installed)
 # ------------------------------------------------------------
 
+import argparse
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from skimage.color import rgb2gray
@@ -19,9 +21,28 @@ from skimage.filters import gaussian, median
 from skimage.morphology import disk
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_INPUT_IMAGE = REPO_ROOT / "data" / "analysis" / "nd2_sample" / "frame_0.png"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "preprocessing"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Denoise + illumination-correct a single frame.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_IMAGE, help="Frame PNG to preprocess")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to write results into")
+    return parser.parse_args()
+
+
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 # ── 1. Paths ──────────────────────────────────────────────────────────────────
-INPUT_IMAGE = "data/analysis/nd2_sample/frame_0.png"
-OUTPUT_DIR = Path("data/analysis/preprocessing")
+args = parse_args()
+INPUT_IMAGE = resolve_path(args.input)
+OUTPUT_DIR = resolve_path(args.output)
 OUTPUT_IMAGE = OUTPUT_DIR / "frame_0_preprocessed.png"      # side-by-side BEFORE/AFTER
 AFTER_ONLY_IMAGE = OUTPUT_DIR / "frame_0_after.png"          # preprocessed frame only
 

@@ -5,112 +5,192 @@
 #
 # How to run (from the repo root, with .venv activated):
 #   python3 analysis/explore_nd2.py
+#   python3 analysis/explore_nd2.py --file "data/raw/Timelapse1.nd2"
 #
 # Requirements:  pip install nd2 numpy Pillow
+#
+# 2026-07: fixed frame-extraction to handle multi-channel (C axis) files.
+# The original version only special-cased RGB (S=3) files; for a real
+# multi-channel file it silently repeated frame[0] indexing, which picks
+# T=0/C=0 and discards every other channel and timepoint with no message.
+# Confirmed against real Dye Trial 1/Z1 data. Now: if a C axis is present, one PNG
+# is saved per channel (at T=0/Z=0) with clear filenames — for a full
+# per-timepoint extraction of one chosen channel, use extract_frames.py.
 # ------------------------------------------------------------
+
+import argparse
+from pathlib import Path
 
 import nd2          # reads .ND2 files from Nikon microscopes
 import numpy as np  # used to work with image data as arrays
 from PIL import Image  # used to save the image as a PNG
 
-# ── 1. Point to your .ND2 file ────────────────────────────────────────────────
-# Change this path to wherever your sample file lives.
-ND2_FILE = "data/raw/MRAP1 KO DN_10X03.nd2"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ND2_FILE = REPO_ROOT / "data" / "raw" / "MRAP1 KO DN_10X03.nd2"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "analysis" / "nd2_sample"
 
-# ── 2. Open the file ──────────────────────────────────────────────────────────
-# `with` automatically closes the file when the block ends.
-with nd2.ND2File(ND2_FILE) as f:
 
-    # ── 3. Print basic metadata ───────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Print ND2 metadata and save a preview PNG.")
+    parser.add_argument("--file", type=Path, default=DEFAULT_ND2_FILE, help="Path to the .nd2 file")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="Folder to save preview PNG(s) into")
+    return parser.parse_args()
 
-    print("=" * 50)
-    print("FILE INFO")
-    print("=" * 50)
 
-    # `f.sizes` is a dictionary like {'T': 10, 'C': 2, 'Z': 5, 'Y': 512, 'X': 512}
-    # T = timepoints, C = channels, Z = z-slices, Y/X = image height/width
-    print(f"Dimensions : {f.sizes}")
-    print(f"Data type  : {f.dtype}")   # e.g. uint16 means 16-bit grayscale
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
 
-    # ── 4. Pixel size (how many micrometres each pixel covers) ────────────────
-    # voxel_size() returns (z, y, x) in micrometres — more reliable than attrs
-    try:
-        vox = f.voxel_size()
-        print(f"Pixel size : x={vox.x:.4f} µm,  y={vox.y:.4f} µm,  z={vox.z:.4f} µm")
-    except Exception:
-        print("Pixel size : not available in this file")
 
-    # ── 5. Channel names ──────────────────────────────────────────────────────
-    # Channels are the different fluorescence colours used during imaging.
-    meta = f.metadata
-    if meta and hasattr(meta, "channels") and meta.channels:
-        print(f"\nChannels ({len(meta.channels)} total):")
-        for i, ch in enumerate(meta.channels):
-            # The channel name is nested a few levels deep in the metadata object
-            name = ch.channel.name if hasattr(ch, "channel") else "unknown"
-            print(f"  Channel {i}: {name}")
-    else:
-        print("\nNo channel metadata found in this file.")
+def to_uint8(frame: np.ndarray) -> np.ndarray:
+    """Contrast-stretch a frame's actual min-max range to 0-255."""
+    frame = frame.astype(np.float32)
+    lo, hi = frame.min(), frame.max()
+    if hi > lo:
+        frame = (frame - lo) / (hi - lo) * 255
+    return np.clip(frame, 0, 255).astype(np.uint8)
 
-    # ── 6. Experiment loops (timepoints, z-stacks, etc.) ─────────────────────
-    experiment = f.experiment
-    if experiment:
-        print("\nExperiment loops:")
-        for loop in experiment:
-            # Each loop tells you what was repeated: time, z-position, etc.
-            print(f"  {loop.type}: {loop.count} steps")
-    else:
-        print("\nNo experiment loop metadata found.")
 
-    print("=" * 50)
+def main() -> None:
+    args = parse_args()
+    nd2_file = resolve_path(args.file)
+    output_dir = resolve_path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── 7. Load the full image array ──────────────────────────────────────────
-    # `f.asarray()` loads every frame into a NumPy array.
-    # Shape will match f.sizes, e.g. (T, C, Z, Y, X).
-    print("\nLoading image data into memory...")
-    images = f.asarray()
-    print(f"Array shape: {images.shape}")
-    print(f"Min value  : {images.min()},  Max value: {images.max()}")
+    # ── 2. Open the file ──────────────────────────────────────────────────────────
+    with nd2.ND2File(nd2_file) as f:
+
+        # ── 3. Print basic metadata ───────────────────────────────────────────────
+        print("=" * 50)
+        print("FILE INFO")
+        print("=" * 50)
+
+        # `f.sizes` is a dictionary like {'T': 10, 'C': 2, 'Z': 5, 'Y': 512, 'X': 512}
+        # T = timepoints, C = channels, Z = z-slices, Y/X = image height/width
+        print(f"Dimensions : {f.sizes}")
+        print(f"Data type  : {f.dtype}")   # e.g. uint16 means 16-bit grayscale
+
+        # ── 4. Pixel size (how many micrometres each pixel covers) ────────────────
+        try:
+            vox = f.voxel_size()
+            print(f"Pixel size : x={vox.x:.4f} µm,  y={vox.y:.4f} µm,  z={vox.z:.4f} µm")
+        except Exception:
+            print("Pixel size : not available in this file")
+
+        # ── 5. Channel names ──────────────────────────────────────────────────────
+        meta = f.metadata
+        channel_names = []
+        if meta and hasattr(meta, "channels") and meta.channels:
+            print(f"\nChannels ({len(meta.channels)} total):")
+            for i, ch in enumerate(meta.channels):
+                name = ch.channel.name if hasattr(ch, "channel") else "unknown"
+                channel_names.append(name)
+                print(f"  Channel {i}: {name}")
+        else:
+            print("\nNo channel metadata found in this file.")
+
+        # ── 6. Experiment loops (timepoints, z-stacks, etc.) ─────────────────────
+        experiment = f.experiment
+        if experiment:
+            print("\nExperiment loops:")
+            for loop in experiment:
+                print(f"  {loop.type}: {loop.count} steps")
+        else:
+            print("\nNo experiment loop metadata found.")
+
+        print("=" * 50)
+
+        sizes = f.sizes
+        is_rgb = sizes.get("S", 1) == 3
+
+        if "T" in sizes and "Z" in sizes and "C" in sizes:
+            # 5D file (T, Z, C, Y, X) — a real one is 348x31x2x1024x1024, ~22.6GB
+            # of pixel data. f.asarray() would load that entire array just to
+            # save a single preview frame per channel, which is needlessly slow
+            # (confirmed: didn't finish in 40s on the real file). Read only the
+            # first (T=0, Z=0) frame lazily via read_frame() instead — full
+            # per-timepoint extraction is extract_frames.py's job, not this
+            # script's; this is a quick peek only.
+            print(
+                "\n5D file detected — skipping full-array load (would be slow on a "
+                "large file). Reading only the first (T=0, Z=0) frame per channel "
+                "for the preview. Use extract_frames.py for a full extraction."
+            )
+            n_channels = sizes["C"]
+            frame0 = f.read_frame(0)  # shape (C, Y, X) — T=0, Z=0
+            print(f"Sample frame shape: {frame0.shape}  Min: {frame0.min()},  Max: {frame0.max()}")
+            print(f"\nMulti-channel file ({n_channels} channels) — saving one preview per channel:")
+            for c in range(n_channels):
+                frame = frame0[c]
+                name = channel_names[c] if c < len(channel_names) else f"channel{c}"
+                safe_name = name.replace(" ", "_")
+                out_path = output_dir / f"frame0_channel{c}_{safe_name}.png"
+                Image.fromarray(to_uint8(frame)).save(out_path)
+                print(f"  Channel {c} ({name}): saved {out_path}")
+            print(
+                f"\nNote: this saved only T=0, Z=0 of each channel — not representative "
+                f"of the full {sizes['T']}x{sizes['Z']} timepoints/slices. For that, use "
+                f"extract_frames.py --channel <n> (which handles this shape via "
+                f"max-intensity Z-projection)."
+            )
+            print("\nDone! Open the saved PNG(s) to see your microscopy image.")
+            return
+
+        # ── 7. Load the full image array ──────────────────────────────────────────
+        print("\nLoading image data into memory...")
+        images = f.asarray()
+        print(f"Array shape: {images.shape}")
+        print(f"Min value  : {images.min()},  Max value: {images.max()}")
 
     # ── 8. Extract a displayable frame ───────────────────────────────────────
-    # Your file has S=3 (RGB colour). asarray() gives shape (Y, X, 3).
-    # PIL's Image.fromarray() expects exactly (H, W, 3) for colour images,
-    # so we must NOT strip those 3 colour channels — only strip T/Z axes if present.
-    sizes = f.sizes
-    is_rgb = sizes.get("S", 1) == 3  # True when the file has 3 colour components
-
     if is_rgb:
-        # Remove any leading T/Z dimensions by collapsing them to index 0,
-        # but stop before we touch the last axis (the 3 colour channels).
+        # Your file has S=3 (RGB colour). asarray() gives shape (Y, X, 3).
+        # Only strip leading T/Z axes, never the trailing 3 colour channels.
         frame = images
         while frame.ndim > 3:
-            frame = frame[0]          # drop one leading axis at a time
-        # frame is now (Y, X, 3) — exactly what PIL needs for RGB
+            frame = frame[0]
+        out_path = output_dir / "frame_0.png"
+        Image.fromarray(to_uint8(frame)).save(out_path)
+        print(f"\nExtracted frame shape: {frame.shape} (RGB)")
+        print(f"Saved PNG  : {out_path}")
+
+    elif "C" in sizes:
+        # Real multi-channel file: don't silently collapse to one channel.
+        # Save one representative frame (T=0/Z=0) PER channel, clearly labeled.
+        axis_order = list(sizes.keys())
+        c_axis = axis_order.index("C")
+        if c_axis != 1:
+            raise ValueError(
+                f"Expected axis order (leading, C, Y, X, ...) but got {axis_order} "
+                f"for shape {images.shape}."
+            )
+        n_channels = sizes["C"]
+        print(f"\nMulti-channel file ({n_channels} channels) — saving one preview per channel:")
+        for c in range(n_channels):
+            frame = images[0, c]
+            name = channel_names[c] if c < len(channel_names) else f"channel{c}"
+            safe_name = name.replace(" ", "_")
+            out_path = output_dir / f"frame0_channel{c}_{safe_name}.png"
+            Image.fromarray(to_uint8(frame)).save(out_path)
+            print(f"  Channel {c} ({name}): saved {out_path}")
+        print(
+            f"\nNote: this saved only the FIRST timepoint/z-slice of each channel. "
+            f"For every timepoint of one chosen channel, use extract_frames.py --channel <n>."
+        )
+
     else:
-        # Grayscale / single-channel: strip everything down to (Y, X)
+        # Grayscale / single-channel, no C axis: strip everything down to (Y, X).
         frame = images
         while frame.ndim > 2:
             frame = frame[0]
+        out_path = output_dir / "frame_0.png"
+        Image.fromarray(to_uint8(frame)).save(out_path)
+        print(f"\nExtracted frame shape: {frame.shape}")
+        print(f"Saved PNG  : {out_path}")
 
-    print(f"\nExtracted frame shape: {frame.shape}")
+    print("\nDone! Open the saved PNG(s) to see your microscopy image.")
 
-    # ── 9. Contrast normalisation to 0-255 ───────────────────────────────────
-    # We stretch the actual min→max range to fill 0-255 so the image looks bright.
-    # Example: if pixel values are 10-187, after normalisation they become 0-255.
-    frame = frame.astype(np.float32)          # float maths to avoid overflow
 
-    lo = frame.min()
-    hi = frame.max()
-    print(f"Contrast stretch: {lo:.0f} → {hi:.0f}  mapped to  0 → 255")
-
-    if hi > lo:
-        frame = (frame - lo) / (hi - lo) * 255   # stretch to full 0-255 range
-
-    frame = np.clip(frame, 0, 255).astype(np.uint8)  # clip any floating-point drift
-
-    # ── 10. Save as PNG ───────────────────────────────────────────────────────
-    out_path = "data/analysis/nd2_sample/frame_0.png"
-    img = Image.fromarray(frame)
-    img.save(out_path)
-    print(f"Saved PNG  : {out_path}")
-    print("\nDone! Open the PNG file to see your microscopy image.")
+if __name__ == "__main__":
+    main()
