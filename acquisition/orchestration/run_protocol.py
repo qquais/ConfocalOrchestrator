@@ -101,6 +101,14 @@ def parse_args() -> argparse.Namespace:
         "--protocol", type=Path, default=PROTOCOL_PATH,
         help=f"Path to the protocol YAML file (default: {PROTOCOL_PATH}).",
     )
+    parser.add_argument(
+        "--yes", action="store_true",
+        help="Skip the interactive confirm_start() prompt - for non-interactive "
+             "launches (e.g. mcp_server.acquisition_tools.start_protocol_run), "
+             "where the caller already obtained confirmation via its own "
+             "confirm=True gate before launching this process. Direct terminal "
+             "use should omit this and go through the normal prompt.",
+    )
     return parser.parse_args()
 
 
@@ -417,7 +425,7 @@ def main():
     print("=" * 60)
 
     # ── SAFETY: nothing below this line runs without explicit confirmation ──
-    if not confirm_start():
+    if not args.yes and not confirm_start():
         print("Acquisition cancelled by user. No stage motion performed.")
         return
 

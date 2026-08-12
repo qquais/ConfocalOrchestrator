@@ -25,9 +25,13 @@
 # ------------------------------------------------------------
 
 import json
+import subprocess
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +42,9 @@ from acquisition.orchestration.stage_positions import StagePositionManager
 
 DASHBOARD_STATUS_URL = "http://localhost:8000/status"
 DASHBOARD_ABORT_URL = "http://localhost:8000/abort"
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = REPO_ROOT / "logs"
 
 
 def _get_backend(backend: str):
@@ -283,6 +290,95 @@ def nudge_focus_offset(delta_counts: float, confirm: bool = False) -> dict:
     from acquisition.backends.nis_sdk import NISSdk
 
     return NISSdk().nudge_pfs_offset(delta_counts)
+
+
+def _dashboard_status_if_reachable() -> dict | None:
+    """Like get_live_status(), but returns None instead of raising when no
+    dashboard is reachable - used by start_protocol_run's pre-flight check.
+    """
+    try:
+        return get_live_status()
+    except ConnectionError:
+        return None
+
+
+def start_protocol_run(protocol: str | None = None, backend: str = "mock", confirm: bool = False) -> dict:
+    """Start a full acquisition protocol run (acquisition/orchestration/run_protocol.py)
+    as a detached background process, and return immediately - the run
+    itself can take hours, so this does NOT block waiting for it to finish.
+
+    protocol: path to a protocol YAML file (see protocols/example_protocol.yaml).
+        Defaults to run_protocol.py's own default if omitted.
+    backend: "mock" (default, safe) or "sdk" (real hardware - requires
+        confirm=True, same gate as every other move/write tool).
+
+    Refuses to start if a dashboard is already reachable at localhost:8000 -
+    that means another run_protocol.py process is already alive and holding
+    that port, and a second one would either fail to bind or fight the
+    first for the same hardware.
+
+    The launched process's own confirm_start() interactive prompt is
+    skipped (via --yes) - this tool's confirm=True (for backend="sdk") or
+    the backend="mock" default IS the confirmation for this launch path;
+    running run_protocol.py directly from a terminal still gets the normal
+    interactive prompt.
+
+    Once started, use get_live_status() to poll progress and abort_run()
+    to stop it - both talk to the same dashboard this process starts.
+    """
+    _require_confirm_for_sdk(backend, confirm)
+
+    if _dashboard_status_if_reachable() is not None:
+        raise RuntimeError(
+            "A dashboard is already reachable at localhost:8000 - an "
+            "acquisition run may already be in progress. Check "
+            "get_live_status(), and use abort_run() to stop it before "
+            "starting another."
+        )
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"run_protocol_{backend}_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+    # -u: unbuffered stdout, so the log file reflects real progress/errors
+    # immediately - no terminal is watching this process to force a flush.
+    cmd = [sys.executable, "-u", "-m", "acquisition.orchestration.run_protocol", "--backend", backend, "--yes"]
+    if protocol is not None:
+        cmd += ["--protocol", protocol]
+
+    if sys.platform == "win32":
+        popen_kwargs = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        popen_kwargs = {"start_new_session": True}
+
+    log_file = open(log_path, "w")
+    process = subprocess.Popen(
+        cmd, cwd=str(REPO_ROOT), stdin=subprocess.DEVNULL,
+        stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs,
+    )
+
+    deadline = time.monotonic() + 8.0
+    status = "starting"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            log_file.close()
+            raise RuntimeError(
+                f"run_protocol.py exited immediately (code {process.returncode}) - "
+                f"see {log_path} for details."
+            )
+        live = _dashboard_status_if_reachable()
+        if live is not None:
+            status = live.get("status", "starting")
+            break
+        time.sleep(0.5)
+
+    return {
+        "pid": process.pid,
+        "log_file": str(log_path),
+        "dashboard_url": "http://localhost:8000",
+        "backend": backend,
+        "protocol": protocol or "default",
+        "status": status,
+    }
 
 
 def abort_run(token: str, confirm: bool = False) -> dict:
