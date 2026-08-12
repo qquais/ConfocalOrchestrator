@@ -101,14 +101,47 @@ def main() -> None:
 
         print("=" * 50)
 
+        sizes = f.sizes
+        is_rgb = sizes.get("S", 1) == 3
+
+        if "T" in sizes and "Z" in sizes and "C" in sizes:
+            # 5D file (T, Z, C, Y, X) — a real one is 348x31x2x1024x1024, ~22.6GB
+            # of pixel data. f.asarray() would load that entire array just to
+            # save a single preview frame per channel, which is needlessly slow
+            # (confirmed: didn't finish in 40s on the real file). Read only the
+            # first (T=0, Z=0) frame lazily via read_frame() instead — full
+            # per-timepoint extraction is extract_frames.py's job, not this
+            # script's; this is a quick peek only.
+            print(
+                "\n5D file detected — skipping full-array load (would be slow on a "
+                "large file). Reading only the first (T=0, Z=0) frame per channel "
+                "for the preview. Use extract_frames.py for a full extraction."
+            )
+            n_channels = sizes["C"]
+            frame0 = f.read_frame(0)  # shape (C, Y, X) — T=0, Z=0
+            print(f"Sample frame shape: {frame0.shape}  Min: {frame0.min()},  Max: {frame0.max()}")
+            print(f"\nMulti-channel file ({n_channels} channels) — saving one preview per channel:")
+            for c in range(n_channels):
+                frame = frame0[c]
+                name = channel_names[c] if c < len(channel_names) else f"channel{c}"
+                safe_name = name.replace(" ", "_")
+                out_path = output_dir / f"frame0_channel{c}_{safe_name}.png"
+                Image.fromarray(to_uint8(frame)).save(out_path)
+                print(f"  Channel {c} ({name}): saved {out_path}")
+            print(
+                f"\nNote: this saved only T=0, Z=0 of each channel — not representative "
+                f"of the full {sizes['T']}x{sizes['Z']} timepoints/slices. For that, use "
+                f"extract_frames.py --channel <n> (which handles this shape via "
+                f"max-intensity Z-projection)."
+            )
+            print("\nDone! Open the saved PNG(s) to see your microscopy image.")
+            return
+
         # ── 7. Load the full image array ──────────────────────────────────────────
         print("\nLoading image data into memory...")
         images = f.asarray()
         print(f"Array shape: {images.shape}")
         print(f"Min value  : {images.min()},  Max value: {images.max()}")
-
-        sizes = f.sizes
-        is_rgb = sizes.get("S", 1) == 3
 
     # ── 8. Extract a displayable frame ───────────────────────────────────────
     if is_rgb:
