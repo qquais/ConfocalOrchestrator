@@ -22,6 +22,41 @@
 # trackpy, skimage, matplotlib) are imported lazily inside each function
 # so the MCP server starts quickly and a missing optional dependency only
 # breaks the tool that needs it.
+#
+# EXECUTION MODEL (decided, not just defaulted): every tool below runs
+# synchronously and blocks until done, including segment_nuclei_image and
+# track_nuclei_sequence (Cellpose, seconds-minutes on CPU/small GPU).
+# No job/status-handle polling pattern is implemented. Reasoning: this
+# server only runs over stdio for a single local client (see server.py) -
+# there's no shared/remote transport or queue infra on the Fort Wayne node
+# to poll against, so a job handle would add a second code path with
+# nothing to poll it concurrently. Revisit this if/when tools are exposed
+# over a shared transport (e.g. multiple concurrent callers, or a
+# request that can legitimately run for the hours a full acquisition run
+# takes - contrast with start_protocol_run in acquisition_tools.py, which
+# already returns immediately because it launches a background process).
+#
+# VERIFIED vs EXPERIMENTAL (per docs/pipeline-overview.md's Status section
+# and each wrapped module's own docstring - not re-verified here against
+# real Physarum data as part of this change):
+#   VERIFIED on real Physarum fluorescence nuclear data (denoise -> segment
+#   -> track, end-to-end): preprocess_frame, segment_nuclei_image,
+#   track_nuclei_sequence, and analyze_synchronization (operates on
+#   track_nuclei_sequence's own output; analysis/synchronization.py's
+#   docstring is written specifically in terms of Physarum nuclei).
+#   Format/metadata-only, not data-dependent: inspect_nd2_metadata,
+#   convert_nd2_to_ometiff, extract_nd2_frames.
+#   EXPERIMENTAL - not confirmed against real Physarum data: compute_shape_metrics
+#   (Cellects whole-organism shape path - pipeline-overview.md only confirms
+#   the denoise/segment/track path, not this one) and
+#   compare_trajectory_sequences (depends on whatever seq01/seq02 CSVs the
+#   caller points it at).
+#   EXPERIMENTAL by construction, real-data ground truth doesn't exist yet:
+#   check_preprocessing_quality (reference-free metrics only, no labelled
+#   ground truth - see its own top-of-function note) and compare_trackmate
+#   (only the synthetic Fluo-N2DH-SIM+ Cell Tracking Challenge dataset has
+#   the segmentation ground truth this needs; no such ground truth exists
+#   for real Physarum data yet).
 # ------------------------------------------------------------
 
 import math
@@ -273,6 +308,115 @@ def segment_nuclei_image(
         "output_path": str(out_path),
         "image_size": [img.shape[1], img.shape[0]],
         "gpu_used": use_gpu,
+    }
+
+
+def check_preprocessing_quality(
+    comparison_image: str = "data/analysis/preprocessing/frame_0_preprocessed.png",
+    output_dir: str = "data/analysis/validation",
+    uniformity_grid: int = 4,
+) -> dict:
+    """Score a preprocess_frame BEFORE/AFTER comparison image on four
+    reference-free quality metrics (background noise, foreground/background
+    contrast, contrast-to-noise ratio, illumination uniformity) and report
+    whether preprocessing improved or worsened each one.
+
+    EXPERIMENTAL / groundwork: there's no hand-labelled ground truth yet, so
+    this can't say preprocessing improved segmentation accuracy - only that
+    it changed these four numbers in the expected direction. See
+    validation/check_preprocessing_quality.py (the script this reimplements
+    as a parameterized function) for the full metric rationale.
+
+    comparison_image: the side-by-side PNG written by preprocess_frame
+    (its "comparison_path" return value) - loaded and split back into the
+    original BEFORE/AFTER halves rather than re-running preprocessing.
+    Writes a metrics-report CSV and a red-overlay PNG showing which pixels
+    the Otsu foreground mask picked - open it to sanity-check the mask
+    actually lines up with real nuclei before trusting the numbers.
+    """
+    import numpy as np
+    import pandas as pd
+    from PIL import Image
+    from skimage.color import rgb2gray
+    from skimage.filters import threshold_otsu
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_csv = out_dir / "preprocessing_quality_report.csv"
+    mask_overlay_path = out_dir / "otsu_mask_overlay.png"
+
+    comparison = np.array(Image.open(comparison_image).convert("RGB"))
+    half_width = comparison.shape[1] // 2
+    before_rgb = comparison[:, :half_width]
+    after_rgb = comparison[:, half_width:]
+    before = rgb2gray(before_rgb)
+    after = rgb2gray(after_rgb)
+
+    # Mask computed once from the ORIGINAL image and reused on both, so the
+    # comparison always measures the same physical regions before vs after.
+    threshold = threshold_otsu(before)
+    foreground_mask = before < threshold
+    background_mask = ~foreground_mask
+
+    def _metrics(gray_image):
+        fg_mean = gray_image[foreground_mask].mean()
+        bg_mean = gray_image[background_mask].mean()
+        bg_noise = gray_image[background_mask].std()
+        contrast = abs(bg_mean - fg_mean)
+        cnr = contrast / (bg_noise + 1e-8)
+        return bg_noise, contrast, cnr
+
+    def _uniformity(gray_image):
+        tile_h = gray_image.shape[0] // uniformity_grid
+        tile_w = gray_image.shape[1] // uniformity_grid
+        tile_means = []
+        for row in range(uniformity_grid):
+            for col in range(uniformity_grid):
+                y0, y1 = row * tile_h, (row + 1) * tile_h
+                x0, x1 = col * tile_w, (col + 1) * tile_w
+                tile_bg_mask = background_mask[y0:y1, x0:x1]
+                if tile_bg_mask.sum() < 50:
+                    continue
+                tile_means.append(gray_image[y0:y1, x0:x1][tile_bg_mask].mean())
+        return float(np.std(tile_means))
+
+    before_noise, before_contrast, before_cnr = _metrics(before)
+    after_noise, after_contrast, after_cnr = _metrics(after)
+    before_uniformity = _uniformity(before)
+    after_uniformity = _uniformity(after)
+
+    def _verdict(before_value, after_value, lower_is_better):
+        improved = (after_value < before_value) if lower_is_better else (after_value > before_value)
+        return "IMPROVED" if improved else "WORSE"
+
+    rows = [
+        {
+            "metric": "Background noise (std dev)", "before": before_noise, "after": after_noise,
+            "verdict": _verdict(before_noise, after_noise, lower_is_better=True),
+        },
+        {
+            "metric": "Foreground/background contrast", "before": before_contrast, "after": after_contrast,
+            "verdict": _verdict(before_contrast, after_contrast, lower_is_better=False),
+        },
+        {
+            "metric": "Contrast-to-noise ratio (CNR)", "before": before_cnr, "after": after_cnr,
+            "verdict": _verdict(before_cnr, after_cnr, lower_is_better=False),
+        },
+        {
+            "metric": "Illumination non-uniformity", "before": before_uniformity, "after": after_uniformity,
+            "verdict": _verdict(before_uniformity, after_uniformity, lower_is_better=True),
+        },
+    ]
+    pd.DataFrame(rows).to_csv(report_csv, index=False)
+
+    overlay = before_rgb.copy()
+    overlay[foreground_mask] = [255, 0, 0]
+    Image.fromarray(overlay).save(mask_overlay_path)
+
+    return {
+        "report_csv": str(report_csv),
+        "mask_overlay_path": str(mask_overlay_path),
+        "metrics": rows,
     }
 
 
@@ -578,4 +722,47 @@ def compare_trajectory_sequences(
         "seq01": {"path": str(seq01_path), **seq01_summary},
         "seq02": {"path": str(seq02_path), **seq02_summary},
         "output_csv": str(out_path),
+    }
+
+
+def compare_trackmate(pipeline_csv: str = None) -> dict:
+    """Score a trajectory CSV (track_nuclei_sequence's output format)
+    against Cell Tracking Challenge ground-truth segmentation masks -
+    per-frame and overall precision/recall/F1/detection-accuracy. Wraps
+    validation/compare_trackmate.py and reuses its main() as-is (rather than
+    reimplementing its plotting logic here), so results and output paths
+    match running that script directly.
+
+    EXPERIMENTAL: the only ground truth wired up is the synthetic
+    Fluo-N2DH-SIM+ Cell Tracking Challenge dataset (validation/compare_trackmate.py's
+    fixed GT_SEG_DIR/GT_TRACK_DIR) - no TrackMate/CTC-style ground truth
+    exists yet for real Physarum data, so this cannot currently score a
+    real-data tracking run, only a run against that CTC sequence.
+
+    pipeline_csv: path to a trajectories CSV (nucleus_id, frame, x, y, area).
+    Defaults to validation/compare_trackmate.py's own PIPELINE_CSV constant.
+    Writes a per-frame + overall summary CSV and a detection-accuracy
+    visualization PNG to validation/results/ (paths fixed by that module).
+    """
+    import pandas as pd
+
+    from validation import compare_trackmate as ctm
+
+    original_pipeline_csv = ctm.PIPELINE_CSV
+    if pipeline_csv:
+        ctm.PIPELINE_CSV = Path(pipeline_csv)
+    try:
+        ctm.main()
+    finally:
+        ctm.PIPELINE_CSV = original_pipeline_csv
+
+    summary = pd.read_csv(ctm.SUMMARY_CSV)
+    overall = summary[summary["frame"] == "overall"].iloc[0].to_dict()
+
+    return {
+        "pipeline_csv": str(pipeline_csv or original_pipeline_csv),
+        "frames_compared": len(summary) - 1,
+        "overall": overall,
+        "summary_csv": str(ctm.SUMMARY_CSV),
+        "visualization_path": str(ctm.VIZ_IMAGE),
     }

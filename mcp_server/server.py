@@ -83,6 +83,10 @@ mcp.add_tool(analysis.track_nuclei_sequence)
 mcp.add_tool(analysis.analyze_synchronization)
 mcp.add_tool(analysis.compare_trajectory_sequences)
 
+# Validation / inspection (compare pipeline output against reference data)
+mcp.add_tool(analysis.check_preprocessing_quality)
+mcp.add_tool(analysis.compare_trackmate)
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
