@@ -42,8 +42,6 @@ import json
 import re
 from pathlib import Path
 
-from acquisition.backends.nis_sdk import NISSdk
-
 PROFILES_DIR = Path(__file__).resolve().parent.parent.parent / "protocols"
 PROFILE_FILENAME_PREFIX = "imaging_profile_"
 PROFILE_FILENAME_SUFFIX = ".json"
@@ -73,13 +71,19 @@ class ImagingProfileManager:
         # Lazy - NISSdk() blocks on an actual hardware connection attempt,
         # which list_profiles()/delete() (pure file operations) shouldn't
         # require. Only save_current()/apply() (the property accessor
-        # below, via self._nis) actually need it.
+        # below, via self._nis) actually need it. The import itself is
+        # deferred too (not just the instantiation) - acquisition.backends.
+        # nis_sdk imports pythoncom/win32com at module level, which don't
+        # exist off Windows, so importing it eagerly would break
+        # list_profiles()/delete() on any non-Windows dev machine too.
         self._nis_instance = None
         self._profiles_dir = profiles_dir
 
     @property
-    def _nis(self) -> NISSdk:
+    def _nis(self) -> "NISSdk":
         if self._nis_instance is None:
+            from acquisition.backends.nis_sdk import NISSdk
+
             self._nis_instance = NISSdk()
         return self._nis_instance
 

@@ -53,6 +53,15 @@ mcp.add_tool(tools.define_position)
 mcp.add_tool(tools.load_positions_from_yaml)
 mcp.add_tool(tools.delete_saved_position)
 
+# Imaging profile tools - SDK/real-hardware only, no mock equivalent.
+# list/delete are pure file operations (no gate); save reads hardware
+# read-only (no gate, same rationale as save_current); apply physically
+# moves the turret/filter wheels and requires confirm=True.
+mcp.add_tool(tools.list_imaging_profiles)
+mcp.add_tool(tools.save_imaging_profile)
+mcp.add_tool(tools.apply_imaging_profile)
+mcp.add_tool(tools.delete_imaging_profile)
+
 # ── Analysis tools (post-acquisition image processing, no hardware) ─────
 
 # Read-only

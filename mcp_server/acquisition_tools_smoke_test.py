@@ -107,6 +107,7 @@ def main() -> int:
 
     skip_if_unavailable("get_live_status", tools.get_live_status, ConnectionError)
     skip_if_unavailable("get_pfs_status", tools.get_pfs_status, Exception)
+    check("list_imaging_profiles", tools.list_imaging_profiles)
 
     print("\n── Write tools with no hardware contact ─────────────────────")
     check(
@@ -152,10 +153,22 @@ def main() -> int:
         lambda: tools.abort_run("dummy-token"),
         PermissionError,
     )
+    expect_raises(
+        "apply_imaging_profile(no confirm)",
+        lambda: tools.apply_imaging_profile("_mcp_smoketest_profile"),
+        PermissionError,
+    )
+    expect_raises(
+        "delete_imaging_profile(nonexistent)",
+        lambda: tools.delete_imaging_profile("_mcp_smoketest_profile_nonexistent"),
+        FileNotFoundError,
+    )
 
     print("\n── Real-hardware-only tools (expected to skip off-hardware) ──")
     skip_if_unavailable("nudge_focus_offset(confirm=True)", lambda: tools.nudge_focus_offset(1.0, confirm=True), Exception)
     skip_if_unavailable("abort_run(confirm=True)", lambda: tools.abort_run("dummy-token", confirm=True), ConnectionError, PermissionError)
+    skip_if_unavailable("save_imaging_profile", lambda: tools.save_imaging_profile("_mcp_smoketest_profile"), Exception)
+    skip_if_unavailable("apply_imaging_profile(confirm=True)", lambda: tools.apply_imaging_profile("_mcp_smoketest_profile", confirm=True), Exception)
 
     print("\n── start_protocol_run (mock) + already-running guard + cleanup ─")
     if TEST_PROTOCOL_SHORT.exists():

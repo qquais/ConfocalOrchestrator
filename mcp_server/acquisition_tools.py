@@ -450,3 +450,68 @@ def delete_saved_position(label: str) -> dict:
     manager = StagePositionManager(backend="mock")
     manager.delete(label)
     return {"deleted": label}
+
+
+# ── Imaging profile tools (per-experiment laser/optics presets) ─────────
+# Thin wrappers over acquisition/orchestration/imaging_profile.py's
+# ImagingProfileManager - see that module's docstring for what a profile
+# covers (objective, DIC, analyzer, light path, condenser, zoom, both
+# filter turrets, D-LEDI illumination) and its caveats. SDK/real-hardware
+# only - there's no mock imaging-profile equivalent (see that module's
+# header comment), so apply/save fail cleanly off real hardware.
+
+
+def list_imaging_profiles() -> list[str]:
+    """Return the experiment names of every saved imaging profile (scans
+    protocols/imaging_profile_*.json). Pure file listing - no hardware
+    contact, no gate.
+    """
+    from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+    return ImagingProfileManager().list_profiles()
+
+
+def save_imaging_profile(experiment_name: str) -> dict:
+    """Read the microscope's CURRENT optical/device configuration and save
+    it under `experiment_name` (protocols/imaging_profile_<experiment_name>.json),
+    overwriting any existing profile for that name.
+
+    Read-only against the hardware (no confirm required, same rationale as
+    save_current) - it never moves anything, only records the current
+    setup. Requires real hardware (SDK) to read from.
+    """
+    from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+    return ImagingProfileManager().save_current(experiment_name)
+
+
+def apply_imaging_profile(experiment_name: str, confirm: bool = False) -> dict:
+    """Apply a previously saved imaging profile by experiment name -
+    physically moves the objective turret/filter wheels/light path to
+    match (see NISSdk.apply_optical_configuration's docstring for exactly
+    what this does and does not account for - it never touches Z).
+
+    Requires confirm=True - same safety-gate pattern as the hardware move
+    tools, even though there's no backend param here (SDK-only, no mock).
+    Raises FileNotFoundError if no profile has been saved for that name.
+    """
+    if not confirm:
+        raise PermissionError(
+            "apply_imaging_profile moves real microscope hardware (turret/"
+            "filter wheels/light path) and requires confirm=True. Refusing "
+            "to proceed without explicit confirmation."
+        )
+    from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+    return ImagingProfileManager().apply(experiment_name)
+
+
+def delete_imaging_profile(experiment_name: str) -> dict:
+    """Delete a saved imaging profile by experiment name. Writes only to
+    the profile file - never touches hardware. Raises FileNotFoundError if
+    no profile exists for that name.
+    """
+    from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+    ImagingProfileManager().delete(experiment_name)
+    return {"deleted": experiment_name}
