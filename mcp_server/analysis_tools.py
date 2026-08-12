@@ -36,42 +36,94 @@
 # takes - contrast with start_protocol_run in acquisition_tools.py, which
 # already returns immediately because it launches a background process).
 #
-# VERIFIED vs EXPERIMENTAL (updated 2026-08-12 after re-testing against real
-# data in D:\Intern Projects\Slime Mold (Physarum polycephalum) - do NOT use
-# "Nathan Capture Tutorial.nd2" from that folder as a reference dataset, it's
-# a test/tutorial capture, not representative real data):
-#   CONFIRMED against real Physarum data (Timelapse 1.nd2, Cy5 channel,
-#   T=217): extract_nd2_frames (also fixed here - see its own docstring),
-#   segment_nuclei_image, track_nuclei_sequence (also fixed here - see its
-#   own code comment on the search_range NaN bug). On a 15-frame/Cy5 slice
-#   this produced 19 raw detections -> 3 kept trajectories (avg length 3.0
-#   frames) sitting on real bright puncta, not noise - low yield, but that
-#   matches how dim/sparse this particular dye trial's signal actually is
-#   (raw pixel values 0-137 out of the full uint16 range), not a pipeline
-#   defect. inspect_nd2_metadata and convert_nd2_to_ometiff are format/
-#   metadata-only and were also confirmed (Arabidopsis + Physarum files).
-#   NOT CONFIRMED as claimed - CORRECTION: this module previously cited
-#   docs/pipeline-overview.md's "validated end-to-end on real fluorescence
-#   nuclear data" line to mark preprocess_frame/analyze_synchronization as
-#   verified too. That doc doesn't name which file, and the one real
-#   DAPI-nuclei file available here (the tutorial capture above) produced 0
-#   kept trajectories - not because of a bug, but because Physarum is a
-#   multinucleate syncytium and at that capture's zoom the nuclei form one
-#   continuous diffuse mass, not separable blobs Cellpose can detect. Treat
-#   preprocess_frame and analyze_synchronization as EXPERIMENTAL again until
-#   confirmed against a real file, and get the actual validated dataset's
-#   path from the team before re-marking anything verified on this basis.
-#   EXPERIMENTAL - not confirmed against real Physarum data: compute_shape_metrics
-#   (Cellects whole-organism shape path - pipeline-overview.md only confirms
-#   the denoise/segment/track path, not this one) and
-#   compare_trajectory_sequences (depends on whatever seq01/seq02 CSVs the
-#   caller points it at).
-#   EXPERIMENTAL by construction, real-data ground truth doesn't exist yet:
-#   check_preprocessing_quality (reference-free metrics only, no labelled
-#   ground truth - see its own top-of-function note) and compare_trackmate
-#   (only the synthetic Fluo-N2DH-SIM+ Cell Tracking Challenge dataset has
-#   the segmentation ground truth this needs; no such ground truth exists
-#   for real Physarum data yet).
+# VERIFIED vs EXPERIMENTAL (updated 2026-08-12, second pass - re-tested against the
+# FULL real Timelapse1.nd2 (217 frames, Cy5 channel; local copy under data/raw/ - the
+# D:\Intern Projects\... path from the previous pass isn't reachable from the machine
+# this pass ran on) rather than the earlier 15-frame slice, and traced the
+# "validated end-to-end" claim below to its actual source):
+#
+#   THE "VALIDATED END-TO-END" CLAIM WAS NEVER TRUE. Traced docs/pipeline-overview.md's
+#   "validated end-to-end on real fluorescence nuclear data" line via git blame to
+#   commit 96b6a67 (2026-07-09 22:34), the commit that CREATED that file. The
+#   earliest real .nd2 file anywhere in this repo (MRAP1 KO DN_10X03.nd2) is dated
+#   2026-07-09 23:04 - thirty minutes AFTER that commit. The real Physarum files
+#   (Dye Trial/Timelapse1/Z-Stack) didn't arrive until 2026-07-28 through 07-31,
+#   about three weeks later. No real data existed in this repo when that line was
+#   written - it was aspirational, not a report of real testing (the same root cause
+#   an earlier audit found and fixed in this repo's README.md - see git history on
+#   that file for the parallel case). Bottom line: there was no prior real run of
+#   preprocess_frame/analyze_synchronization to "re-verify" - below is their first
+#   genuine real-data run, not a re-confirmation.
+#
+#   CONFIRMED against real Physarum data (Timelapse1.nd2, Cy5 channel, all 217
+#   frames - not a slice): extract_nd2_frames, inspect_nd2_metadata,
+#   convert_nd2_to_ometiff unchanged from the previous pass, still working.
+#   segment_nuclei_image's gpu_used correctly reports True (cross-checked against
+#   torch.cuda.is_available(), both True, on this node's A30). track_nuclei_sequence
+#   on the full 217 frames: 224 detections -> 106 raw trajectories -> 16 kept (avg
+#   length 7.75 frames) - substantially more than the earlier 15-frame slice's 19 ->
+#   ~14 -> 3 kept (avg 3.0). More frames clearly increases yield and average track
+#   length. BUT several of the longest surviving trajectories show physically
+#   implausible area swings (up to ~166% frame-to-frame) and the visualization shows
+#   multiple perfectly-straight long-distance segments - trackpy's classic signature
+#   for linking two different nearby blobs, not one moving nucleus. The
+#   auto-estimated search_range_px (168, from the pooled median area across all 217
+#   frames' detections) is likely too permissive given how heterogeneous real
+#   detection sizes actually are (see the diameter finding below) - more frames
+#   increased quantity, not proportionally trustworthiness; spot-check a kept
+#   trajectory's area/position consistency before trusting it, don't take
+#   trajectories_kept as-is. preprocess_frame and analyze_synchronization: run for
+#   the first time ever against real data this pass (both previously untested despite
+#   the docstring's old claim). preprocess_frame completes cleanly on a real signal-
+#   bearing frame (t=2, Cy5, 6 nearby real detections). analyze_synchronization also
+#   completes without error on the real 16-nucleus/217-frame trajectory set above,
+#   but the result isn't statistically meaningful: of the 120 possible nucleus pairs,
+#   exactly ONE (69, 76) ever shares any frames at all, and it shares exactly 2 -
+#   Pearson correlation from 2 points is always +/-1.0 by construction, which is why
+#   "most synchronized" and "least synchronized" report the identical pair. This is a
+#   tracking-density limitation flowing from track_nuclei_sequence's output above,
+#   not a bug in analyze_synchronization itself - the function is confirmed working,
+#   the input just isn't dense enough yet for the result to mean anything.
+#
+#   FIXED this pass: check_preprocessing_quality had the same hardcoded
+#   "darker pixels = foreground" bug that validation/check_preprocessing_quality.py
+#   had before an earlier fix - never ported over when this function was
+#   reimplemented here. Confirmed via the mask overlay: before the fix, ~99% of a
+#   real Cy5 frame was marked "foreground" (nearly solid red, wrong); after switching
+#   to "whichever Otsu class has fewer pixels" (not a hardcoded brightness
+#   direction), the overlay correctly highlights the real sparse bright puncta
+#   instead. Fixed in this file's code - see the function's inline comment.
+#
+#   CONFIRMED WORKING BUT SILENTLY MEANINGLESS ON REAL DATA: compare_trackmate, run
+#   against a real trajectories CSV (9 real detections) instead of the synthetic
+#   default. Does not raise an error - it silently scores the real detections
+#   against the synthetic Fluo-N2DH-SIM+ ground truth (a completely different
+#   image), producing a well-formed but meaningless 0.0 precision/recall/F1 result.
+#   That's worse than erroring: it reads as a real failing evaluation rather than
+#   "no valid ground truth exists for this comparison." No real Physarum ground
+#   truth exists yet, so EXPERIMENTAL status is unchanged - but now it's confirmed
+#   this fails silently, not loudly, if pointed at real data by mistake.
+#
+#   DIAMETER TUNING: tested segment_nuclei_image's diameter param (10/15/20/30/50px)
+#   against a real frame with 6 auto-detected objects. Real detected sizes are
+#   highly heterogeneous - implied diameters from 6.8px to 72.3px within that single
+#   frame. No fixed value reproduced auto-detect's full result except 30 (which
+#   happens to match it); smaller or larger values found fewer or zero objects.
+#   Conclusion: do NOT hardcode a fixed default diameter for real Physarum data -
+#   the size variation is real, not noise, and diameter=None (current default)
+#   already handles it at least as well as any single tested fixed value.
+#
+#   STILL BLOCKED, not attempted this pass (explicitly out of scope for this pass,
+#   not silently skipped): compute_shape_metrics. cellects 1.1.12 (current PyPI
+#   latest) requires Python >=3.11; this venv is 3.9.25, so `pip install cellects`
+#   fails outright ("No matching distribution found for cellects"). This needs a
+#   venv rebuild, not a pip install, to actually test - not added to
+#   requirements.txt since a pin for a package that can't install here would just
+#   break `pip install -r requirements.txt` for anyone on this environment.
+#
+#   EXPERIMENTAL, unchanged: compare_trajectory_sequences (depends entirely on
+#   whatever seq01/seq02 CSVs the caller points it at - nothing to verify on its
+#   own).
 # ------------------------------------------------------------
 
 import math
@@ -303,6 +355,16 @@ def segment_nuclei_image(
     CPU). diameter: expected nucleus diameter in pixels after resizing, or
     None to auto-detect. use_gpu: None resolves via CELLPOSE_GPU / CUDA
     availability (see analysis/cellpose_runtime.py).
+
+    scale=0.25 (the default) can hide real detections on faint/sparse real
+    Physarum data - confirmed on a real Cy5 frame (t=6 of Timelapse1.nd2,
+    peak pixel value only 590/4095) that found 0 nuclei at scale=0.25 but 2
+    at scale=1.0 with everything else identical. Model choice (model_type=
+    "nuclei" vs the default model track_nuclei_sequence uses) made no
+    difference in that same comparison - it's specifically the resize, not
+    the model. Left at 0.25 by default for CPU speed since that's this
+    function's documented tradeoff, but pass scale=1.0 when checking
+    real/faint data before trusting a 0-nuclei result.
     """
     import numpy as np
     from PIL import Image
@@ -387,8 +449,17 @@ def check_preprocessing_quality(
 
     # Mask computed once from the ORIGINAL image and reused on both, so the
     # comparison always measures the same physical regions before vs after.
+    # Foreground = whichever side of the Otsu threshold has FEWER pixels,
+    # not hardcoded "darker = foreground": that assumption holds for
+    # brightfield (dark nuclei on a light background) but is backwards for
+    # fluorescence data (bright sparse signal on a dark background) - on a
+    # real Physarum Cy5 frame, hardcoding "darker" marked ~99% of the frame
+    # as foreground (confirmed via the mask overlay: nearly solid red, with
+    # the real bright puncta showing up as small dark holes instead).
     threshold = threshold_otsu(before)
-    foreground_mask = before < threshold
+    darker_mask = before < threshold
+    lighter_mask = ~darker_mask
+    foreground_mask = darker_mask if darker_mask.sum() <= lighter_mask.sum() else lighter_mask
     background_mask = ~foreground_mask
 
     def _metrics(gray_image):
