@@ -39,6 +39,29 @@
 #     checked afterward. Treat print() as still unconfirmed; keep
 #     relying on file output for anything that needs to be seen.
 #
+# CONFIRMED (2026-08-13) - external trigger mechanism:
+#   NIS-Elements' own executable supports command-line macro execution
+#   even against an ALREADY-RUNNING instance:
+#     "C:\Program Files\NIS-Elements\nis_ar.exe" -cw "Jobs_RunJobByName(\"Arabidopsis\", \"TestCapture\")"
+#   -cw runs the macro command and waits for it to finish. Tested live
+#   from a plain subprocess call (not from inside NIS) while NIS-
+#   Elements was already running: confirmed it does NOT spawn a second
+#   instance (process list showed the same single nis_ar.exe PID
+#   throughout) and DOES trigger a real Job run - a fresh capture
+#   landed in results/capture/ with real signal data. This is the
+#   external-trigger mechanism run_protocol.py needs.
+#   CAVEATS:
+#     - The launching subprocess's own exit code was 127, NOT 0, despite
+#       success - do not use this process's exit code as a success
+#       signal. Verify success by polling for the expected output file
+#       to appear/update instead (same pattern start_protocol_run()
+#       already uses for the dashboard).
+#     - Took notably longer than a manual "Run Job" click in the UI
+#       (over 45 seconds, vs. a few seconds when clicked directly) -
+#       account for this in timeout design, don't assume it's fast.
+#     - Jobs_RunJobByName takes (ProjDbName, ProjDbJobName) - no job key
+#       lookup needed for this simple case.
+#
 # STILL UNRESOLVED (see docs/microscope-notes.md for detail):
 #   - Architecture mismatch: run_protocol.py's capture_image() is
 #     called once per channel and expects one frame back per call
@@ -46,11 +69,18 @@
 #     Capture task instead hands back every active channel together in
 #     one call (see CONFIRMED above) - this file now saves one PNG per
 #     component, but nothing yet reconciles "one call -> N files" with
-#     capture_image()'s "one call -> one Path" contract. Resolve this
-#     before wiring backend="sdk" into capture_image().
-#   - How an external script (run_protocol.py) triggers this Job on
-#     demand is still unconfirmed - see point 9 in "REMAINING STEPS"
-#     below.
+#     capture_image()'s "one call -> one Path" contract. One plausible
+#     fix, NOT yet tested: use Jobs_RunJobInitParam(JobdefDbKey,
+#     JobParamJson) to set "OCSel.OptConf" to a single-channel Optical
+#     Configuration before each trigger, so one call = one channel
+#     again - matching capture_image()'s existing contract instead of
+#     requiring it to change. Needs live testing before relying on it.
+#   - Whether _capture_count (module-level Python state) persists
+#     across separate -cw-triggered Job runs, or resets each time
+#     (each trigger may be a fresh execution context) - untested. If it
+#     resets, filenames will need a different uniqueness source (e.g.
+#     a timestamp is already included, so collisions are unlikely, but
+#     verify before relying on the sequence number ordering anything).
 #
 # WHY THIS EXISTS
 # ----------------
@@ -116,17 +146,16 @@
 #   1. DONE (2026-08-13) - 5-FAM/TD component-index mapping confirmed
 #      independently via isolated single-channel captures - see
 #      CONFIRMED above.
-#   2. Decide how to reconcile "one Capture call -> N channel files"
+#   2. IN PROGRESS - reconcile "one Capture call -> N channel files"
 #      with run_protocol.py's "one capture_image() call -> one Path"
-#      per-channel loop - e.g. change capture_image() to fetch all
-#      channels for a position/z-slice in one call instead of looping,
-#      or find a way to trigger one Capture per channel from outside.
-#   3. Confirm how an external script (run_protocol.py) triggers this
-#      Job on demand - nothing here has tested that. One plausible
-#      approach, still unconfirmed: Python_RunFile/Python_RunString
-#      (see docs/microscope-notes.md's Jobs API function list) may let
-#      a NIS macro invoke this Job from outside.
-#   4. Once 2-3 are resolved, wire this into run_protocol.py's
+#      per-channel loop. Next test: does Jobs_RunJobInitParam's
+#      "OCSel.OptConf" JSON param reliably select a single-channel
+#      Optical Configuration per -cw trigger? If yes, one call = one
+#      channel again, matching capture_image()'s existing contract.
+#   3. DONE (2026-08-13) - external trigger confirmed via
+#      "nis_ar.exe" -cw "Jobs_RunJobByName(...)" against the already-
+#      running instance - see CONFIRMED above.
+#   4. Once 2 is resolved, wire this into run_protocol.py's
 #      capture_image(), in a new `if backend == "sdk": ...` branch,
 #      replacing its current `return None` for that backend.
 # ------------------------------------------------------------

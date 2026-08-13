@@ -1,0 +1,205 @@
+# nis_jobs_trigger.py
+# ------------------------------------------------------------
+# External-process trigger for the NIS-Elements "TestCapture" Job.
+# CONFIRMED LIVE 2026-08-13 (see docs/microscope-notes.md's "Image
+# Capture" section for the full history).
+#
+# This is the "outside NIS" half of real image capture:
+# acquisition/planned/nis_jobs_capture.py's run() function is the
+# "inside NIS" half (pasted into the Job's PythonScript task - reads
+# the captured array from within NIS's own Python engine). This module
+# is what an external Python process (eventually run_protocol.py) runs
+# to make that Job actually fire, on demand, with no human clicking
+# "Run Job" - the piece needed for a real unattended automated run.
+#
+# CONFIRMED mechanism (2026-08-13):
+#   Launching "nis_ar.exe" -cw "Jobs_RunJobByName(Project, Job)" as a
+#   subprocess, while NIS-Elements is ALREADY running, does NOT open a
+#   second instance - it forwards the macro command to the running
+#   instance and -cw waits for it to finish. Verified: process list
+#   showed the same single nis_ar.exe PID throughout, and a real fresh
+#   capture landed on disk afterward.
+#
+# CONFIRMED WORKING END-TO-END from this module's own trigger_capture()
+# (not just a raw shell command) 2026-08-13, after fixing the
+# capture_output bug below - triggered the Job, waited correctly, and
+# saved a real capture (capture_20260813_180625_ch0.png).
+#
+# CAVEATS (all confirmed 2026-08-13):
+#   - The launching subprocess's own exit code was 127 despite success.
+#     Do NOT treat a nonzero exit code as failure - this module verifies
+#     success by polling for the expected output file's mtime to
+#     change instead, same pattern as start_protocol_run()'s dashboard
+#     polling elsewhere in this repo.
+#   - Took over 45 seconds end-to-end in the measured runs (vs. a few
+#     seconds when "Run Job" is clicked directly in the NIS UI) -
+#     TRIGGER_TIMEOUT_SEC below is generous on purpose; tighten it only
+#     after more timing data.
+#   - CRITICAL: do not pass capture_output=True/stdout=PIPE/stderr=PIPE
+#     to the subprocess.run call below. Redirecting this process's
+#     output into pipes broke the trigger entirely (produced no
+#     capture at all after a full 180s timeout) - the same command run
+#     with output NOT redirected succeeded twice in a row. Root cause
+#     not fully understood (plausibly interferes with however -cw's
+#     single-instance forwarding communicates with the running
+#     instance) - treat this as a hard constraint, not a style choice.
+#   - The currently-live PythonScript task in the real "TestCapture"
+#     Job is still the DIAGNOSTIC script (writes captured_frame.npy +
+#     array_info.json to a FIXED path, overwritten every run) - NOT the
+#     production _save_components version in nis_jobs_capture.py (that
+#     one saves per-channel PNGs with unique names, but has only been
+#     smoke-tested offline against a saved .npy, never pasted into NIS
+#     and run live). This module works against the diagnostic script's
+#     CONFIRMED-LIVE fixed-path output, and immediately copies the raw
+#     array out to a uniquely-named location after each trigger so the
+#     next trigger's overwrite can't race it.
+#   - Channel-to-component-index mapping (COMPONENT_CHANNEL_NAMES
+#     below) is CONFIRMED ONLY for the "5-FAM, TD" two-channel
+#     combination tested live on the "RootTipTest" experiment
+#     (2026-08-13, see docs/microscope-notes.md) - NOT verified to
+#     generalize to a different channel count or ordering. Re-verify
+#     (isolated single-channel captures, same method as before) before
+#     trusting this mapping for a different protocol/experiment.
+#   - NOT YET wired into run_protocol.py's capture_image() - this is a
+#     standalone, independently-testable piece. Wire it in only after
+#     it's been exercised enough to trust its timeout/error handling
+#     under repeated calls, not just the one manual test so far.
+# ------------------------------------------------------------
+
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+NIS_EXE_PATH = Path(r"C:\Program Files\NIS-Elements\nis_ar.exe")
+
+# Fixed-path output of the CURRENTLY-LIVE diagnostic PythonScript task
+# in NIS's "TestCapture" Job - see the CAVEATS above. If that script is
+# ever replaced with nis_jobs_capture.py's production _save_components
+# version, this module's _read_latest_capture() will need updating to
+# match its (different, per-channel) output naming instead.
+DIAGNOSTIC_OUTPUT_NPY = REPO_ROOT / "results" / "capture" / "captured_frame.npy"
+
+CAPTURE_DIR = REPO_ROOT / "data" / "captures"
+
+# CONFIRMED 2026-08-13 for the "RootTipTest" experiment's 5-FAM+TD
+# combination only - see the CAVEATS above before reusing this for a
+# different experiment/channel set.
+COMPONENT_CHANNEL_NAMES = ["5-FAM", "TD"]
+
+TRIGGER_TIMEOUT_SEC = 180.0
+POLL_INTERVAL_SEC = 1.0
+
+
+def _file_mtime(path: Path) -> float:
+    """Return a file's mtime, or 0.0 if it doesn't exist yet - lets the
+    first-ever trigger (no prior capture on disk) work the same way as
+    later ones, without a special case."""
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def trigger_capture(
+    project: str = "Arabidopsis",
+    job: str = "TestCapture",
+    timeout_sec: float = TRIGGER_TIMEOUT_SEC,
+) -> dict:
+    """Trigger the named NIS-Elements Job from outside NIS, wait for a
+    fresh capture to land, split it into one file per channel, and
+    return their paths.
+
+    Returns {"paths": {channel_name: Path, ...}, "shape": tuple,
+    "dtype": str} - see this module's CAVEATS for what's confirmed vs.
+    assumed about the underlying mechanism.
+
+    Raises RuntimeError if no fresh capture appears within timeout_sec -
+    this does NOT necessarily mean the trigger command itself failed;
+    it may also mean the Job's Capture task errored inside NIS (e.g.
+    "Camera is not connected", seen during testing) before ever
+    reaching the PythonScript task that writes the output file.
+    """
+    import numpy as np
+    from PIL import Image
+
+    baseline_mtime = _file_mtime(DIAGNOSTIC_OUTPUT_NPY)
+
+    macro_command = f'Jobs_RunJobByName("{project}", "{job}")'
+    cmd = [str(NIS_EXE_PATH), "-cw", macro_command]
+
+    # -cw is documented to wait for the macro to finish before this
+    # process exits, but its own exit code isn't a reliable success
+    # signal (see CAVEATS) - the real confirmation is the polling loop
+    # below. subprocess.run's timeout is just a backstop in case -cw
+    # itself hangs indefinitely (not observed so far, but untested at
+    # scale).
+    #
+    # CONFIRMED 2026-08-13: do NOT pass capture_output=True (or
+    # stdout=/stderr=PIPE) here - redirecting this process's
+    # stdout/stderr into pipes appears to break -cw's ability to
+    # forward the command to the already-running NIS-Elements instance
+    # (a run with capture_output=True produced no capture at all after
+    # 180s; the identical command run twice with output NOT redirected,
+    # both directly via a shell and via this exact subprocess.run call,
+    # succeeded both times). Inherit the parent's stdout/stderr instead.
+    try:
+        subprocess.run(cmd, timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        pass  # fall through to the polling loop - it may have still succeeded
+
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if _file_mtime(DIAGNOSTIC_OUTPUT_NPY) > baseline_mtime:
+            break
+        time.sleep(POLL_INTERVAL_SEC)
+    else:
+        raise RuntimeError(
+            f"No fresh capture appeared at {DIAGNOSTIC_OUTPUT_NPY} within "
+            f"{timeout_sec:.0f}s of triggering Job '{job}' in project "
+            f"'{project}'. This may mean the Capture task itself errored "
+            "inside NIS (e.g. camera not connected) before reaching the "
+            "PythonScript task - check NIS-Elements directly."
+        )
+
+    # Small extra pause - the file's mtime can update slightly before
+    # the write is fully flushed to disk; not otherwise confirmed
+    # necessary, but cheap insurance against a truncated read.
+    time.sleep(0.5)
+
+    arr = np.load(DIAGNOSTIC_OUTPUT_NPY)
+    frame = np.asarray(arr)
+    if frame.ndim == 4:
+        frame = frame[0]  # (Z, Y, X, Component) -> (Y, X, Component), Z confirmed size 1
+    num_components = frame.shape[-1] if frame.ndim == 3 else 1
+    if frame.ndim == 2:
+        frame = frame[..., np.newaxis]
+
+    if num_components == len(COMPONENT_CHANNEL_NAMES):
+        channel_names = COMPONENT_CHANNEL_NAMES
+    else:
+        channel_names = [f"ch{i}" for i in range(num_components)]
+
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    paths = {}
+    for i, name in enumerate(channel_names):
+        channel = frame[..., i]
+        safe_name = name.replace("/", "-")
+        dest = CAPTURE_DIR / f"capture_{timestamp}_{safe_name}.png"
+        if channel.dtype == np.uint16:
+            Image.fromarray(channel, mode="I;16").save(dest)
+        else:
+            Image.fromarray(channel).convert("L").save(dest)
+        paths[name] = dest
+
+    return {"paths": paths, "shape": tuple(arr.shape), "dtype": str(arr.dtype)}
+
+
+if __name__ == "__main__":
+    result = trigger_capture()
+    print(f"shape={result['shape']} dtype={result['dtype']}")
+    for name, path in result["paths"].items():
+        print(f"  {name}: {path}")
