@@ -48,14 +48,24 @@ LOG_DIR = REPO_ROOT / "logs"
 
 
 def _get_backend(backend: str):
-    """Instantiate the stage backend named by `backend` ("mock" or "sdk").
+    """Return the stage backend named by `backend` ("mock" or "sdk").
+
+    "mock" returns the same persistent, module-level `nis` object that
+    acquisition.orchestration.stage_positions.StagePositionManager uses
+    (either MockNIS, or the real `nis` module if this happens to be
+    running inside NIS-Elements' own Python environment) - NOT a fresh
+    MockNIS() per call. A fresh instance would reset simulated stage
+    state to (0, 0, 0) on every call, making get_position/
+    move_xy_absolute/move_xy_relative disagree with each other and with
+    the StagePositionManager-backed tools (save_current,
+    go_to_saved_position), which already shared that persistent state.
 
     No safety gate here - only for use by read-only callers. Move/write
     tools must call _require_confirm_for_sdk() first.
     """
     if backend == "mock":
-        from acquisition.backends.nis_mock import MockNIS
-        return MockNIS()
+        from acquisition.orchestration.stage_positions import nis
+        return nis
     elif backend == "sdk":
         from acquisition.backends.nis_sdk import NISSdk
         return NISSdk()
