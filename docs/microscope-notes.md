@@ -160,13 +160,57 @@ a Job, which NIS-Elements invokes with an already-captured frame as
 `imgs[0]` (`imgs[0].array()` → numpy ndarray). Documented locally at
 `C:\Program Files\NIS-Elements\Docs\nis\eng_ar\task.system_section.html`.
 
-**Currently blocked: JOBS Editor is not licensed on this install**
-(NIS-Elements AR 6.10.01 — confirmed via the menu bar, 2026-07-27). The
-full planned approach, exact JOBS Explorer click-through steps, and an
-untested placeholder function are written up in
-`acquisition/planned/nis_jobs_capture.py` — not wired into `run_protocol.py`,
-which still correctly returns `None` for `backend="sdk"`.
-Pick this up the moment JOBS Editor is licensed.
+**2026-08-13: JOBS Editor is now licensed** (was confirmed unlicensed
+2026-07-27 — relicensed sometime between then and now, exact date
+unknown). The `imgs[0].array()` capture path documented above is
+**confirmed working live**, via a `TestCapture` Job (Capture → Python
+Script, no z-stepping, no sample on the stage) built directly in JOBS
+Explorer:
+
+- Real array shape: **`(1, 2048, 2048, 2)`**, dtype `uint16` — corrects
+  the earlier guess of `(1, 1024, 1024, 1)`, which was inferred from
+  older ND2 sample metadata (see "Real Sample Data" below) rather than
+  a live Jobs API test. Resolution is 2048×2048, not 1024×1024.
+- The trailing axis of size **2 is a genuine surprise**: one `Capture`
+  task call returns more than one channel/component at once, not a
+  single channel per call. On the initial empty-stage test the two
+  components had distinct pixel statistics (component 0: min 42/max
+  69/mean 50.1; component 1: min 50/max 58/mean 52.6 — both just
+  sensor dark-noise, since no sample was loaded), confirming they're
+  real, distinct data rather than a duplicated or garbage axis.
+- **2026-08-13, follow-up with a real sample loaded** (an Arabidopsis
+  root-tip sample, "RootTipTest" experiment) **confirms the
+  component-to-channel mapping independently**, by capturing with only
+  one channel active at a time instead of inferring it from a
+  filename:
+  - **5-FAM only** → shape `(1, 2048, 2048, 1)`, min=41/max=73/mean=50.1
+    — flat, no real signal (same dark-noise range as the empty-stage
+    test).
+  - **TD only** → shape `(1, 2048, 2048, 1)`, min=50/max=613/mean=71.4/
+    std=20.5 — real structured signal, matching component 1 from the
+    combined two-channel capture (min=50/max=639/mean=71.3/std=21.1)
+    almost exactly.
+  - **Conclusion: component 0 = 5-FAM, component 1 = TD.** The visible
+    structure/detail seen live on this sample came from TD (transmitted
+    light), not 5-FAM fluorescence — 5-FAM produced no real signal on
+    this particular sample/config. Worth checking with whoever set up
+    "RootTipTest" whether the 5-FAM filter cube is correctly configured
+    (its emission range showed as 560-850nm, unusually red-shifted for
+    FAM, which normally emits ~505-545nm) or whether this sample simply
+    isn't labeled with that dye.
+- **Architecture implication, not yet resolved**: `run_protocol.py`'s
+  loop calls `capture_image()` once per channel in the protocol's
+  `channels` list, expecting one frame back per call (matching
+  `MockNIS.capture()`'s one-`Path`-per-call contract). If a real
+  `Capture` task instead returns every active channel together in one
+  call, that per-channel imperative loop doesn't match how real capture
+  actually behaves — needs a decision before wiring `backend="sdk"`
+  into `capture_image()`, not just a shape/dtype fix.
+- Confirmed working code (reads the array, logs shape/dtype, saves a
+  16-bit PNG per component into `data/captures/`) is in
+  `acquisition/planned/nis_jobs_capture.py` — still not wired into
+  `run_protocol.py`'s `capture_image()`, pending the architecture
+  question above.
 
 ## Real Sample Data (`data/nd2_sample/`)
 

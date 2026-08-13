@@ -1,0 +1,22 @@
+{
+  "iANALYZER_POS": 0,
+  "iANALYZER_SLOT": 0,
+  "iCONDENSER": 1,
+  "iDIC_POLARIZER": 1,
+  "iDIC_PRISM": 0,
+  "iDLED1_POS": 0,
+  "iDLED1_SWITCH": 0,
+  "iDLED2_POS": 0,
+  "iDLED2_SWITCH": 0,
+  "iDLED3_POS": 0,
+  "iDLED3_SWITCH": 0,
+  "iDLED4_POS": 0,
+  "iDLED4_SWITCH": 0,
+  "iLIGHTPATH": 1,
+  "iNOSEPIECE": 1,
+  "iOPTZOOM": 2,
+  "iTURRET1POS": 1,
+  "iTURRET1SHUTTER": 0,
+  "iTURRET2POS": 1,
+  "iTURRET2SHUTTER": 0
+}
