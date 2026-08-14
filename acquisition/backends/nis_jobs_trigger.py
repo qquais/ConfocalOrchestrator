@@ -92,6 +92,21 @@ COMPONENT_CHANNEL_NAMES = ["5-FAM", "TD"]
 TRIGGER_TIMEOUT_SEC = 180.0
 POLL_INTERVAL_SEC = 1.0
 
+# Where the TestCapture Job's "Alternative Storage Location" task
+# (added 2026-08-14, alongside an "OCSel" task that forces the Job onto
+# an isolated "QuaisTest_RootTipTestCopy" experiment copy - see
+# docs/microscope-notes.md) saves its .nd2 files. FLAT - "Put files
+# from all runs into specified folder (add a distinguishing unique
+# prefix)" was chosen, so every capture's .nd2 lands directly in this
+# one folder with a unique timestamp prefix, e.g.
+# 20260814_171756_519__Channel5-FAM,TD_Seq0000.nd2 - NOT nested under
+# project/job/<timestamp>/ subfolders the way NIS's own Jobs database
+# default location was (see git history for that older path/pattern,
+# from before this Job was rebuilt with Alternative Storage Location).
+# Install- and Job-configuration-specific - re-confirm/update this if
+# the Job's storage settings ever change again.
+CAPTURE_ND2_DIR = Path(r"D:\QurratulAin_ConfocalOrchestratorProject\RootTipTestCaptures")
+
 
 def _file_mtime(path: Path) -> float:
     """Return a file's mtime, or 0.0 if it doesn't exist yet - lets the
@@ -103,14 +118,72 @@ def _file_mtime(path: Path) -> float:
         return 0.0
 
 
+def _read_pixel_size_um(after_mtime: float) -> float | None:
+    """Find the real .nd2 file NIS auto-saved for this Job run (newest
+    file directly under CAPTURE_ND2_DIR - flat, see that constant's
+    comment - created after `after_mtime`) and read its calibrated
+    pixel size in microns/pixel, the same way mcp_server/
+    analysis_tools.py already does for post-hoc ND2 analysis
+    (nd2.ND2File(...).voxel_size()).
+
+    This is the CORRECT source of pixel size - confirmed 2026-08-14 to
+    match NIS's own status bar exactly (0.7553 um/px vs. displayed
+    "0.76 um/px") - rather than a value typed in by hand each time,
+    which can silently go stale as objective/zoom changes.
+
+    No longer takes project/job - CAPTURE_ND2_DIR is a single fixed
+    folder now (the Alternative Storage Location task ignores NIS's
+    project/job database structure entirely), so there's nothing
+    project/job-specific left to build a path from.
+
+    Returns None (does not raise) if no matching .nd2 file is found -
+    callers should fall back to requiring an explicit pixel size rather
+    than fail outright, since this depends on CAPTURE_ND2_DIR being
+    correct for this install/Job configuration (see its own caveat) and
+    on x/y pixel size being equal (assumed - not verified for a
+    non-square-pixel setup).
+    """
+    import nd2
+
+    candidates = [
+        p for p in CAPTURE_ND2_DIR.glob("*.nd2")
+        if p.stat().st_mtime >= after_mtime
+    ]
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+
+    with nd2.ND2File(newest) as f:
+        voxel = f.voxel_size()
+        if voxel.x != voxel.y:
+            # Non-square pixels would break the simple offset_px *
+            # pixel_size_um_per_px math in center_on_sample.py - flag
+            # loudly rather than silently pick one axis.
+            raise ValueError(
+                f"{newest} has non-square pixels (x={voxel.x}, y={voxel.y} "
+                "um/px) - center_on_sample.py's offset math assumes "
+                "square pixels and needs updating before this is safe "
+                "to use here."
+            )
+        return voxel.x
+
+
 def trigger_capture(
-    project: str = "Arabidopsis",
-    job: str = "TestCapture",
+    project: str,
+    job: str,
     timeout_sec: float = TRIGGER_TIMEOUT_SEC,
 ) -> dict:
     """Trigger the named NIS-Elements Job from outside NIS, wait for a
     fresh capture to land, split it into one file per channel, and
     return their paths.
+
+    project, job: the exact Project/Job names as they exist in NIS's
+    own Jobs database (case-sensitive) - e.g. "Arabidopsis"/
+    "TestCapture" was this repo's throwaway debug Job used to confirm
+    this whole mechanism (2026-08-13), NOT a default to build real
+    experiments against. No default is given deliberately - pass the
+    real project/job you mean to run every time, so a typo or stale
+    value fails loudly instead of silently triggering the wrong Job.
 
     Returns {"paths": {channel_name: Path, ...}, "shape": tuple,
     "dtype": str} - see this module's CAVEATS for what's confirmed vs.
@@ -195,11 +268,34 @@ def trigger_capture(
             Image.fromarray(channel).convert("L").save(dest)
         paths[name] = dest
 
-    return {"paths": paths, "shape": tuple(arr.shape), "dtype": str(arr.dtype)}
+    try:
+        pixel_size_um_per_px = _read_pixel_size_um(baseline_mtime)
+    except Exception as e:
+        # Don't let a pixel-size lookup problem (e.g. CAPTURE_ND2_DIR
+        # wrong for this install/Job configuration) throw away an
+        # otherwise-successful capture - the caller can still fall back
+        # to an explicit value. Surface it as None + a note rather than
+        # raising.
+        pixel_size_um_per_px = None
+        print(f"WARNING: could not read real pixel size for this capture: {e}")
+
+    return {
+        "paths": paths,
+        "shape": tuple(arr.shape),
+        "dtype": str(arr.dtype),
+        "pixel_size_um_per_px": pixel_size_um_per_px,
+    }
 
 
 if __name__ == "__main__":
-    result = trigger_capture()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Trigger a NIS-Elements Job from outside NIS.")
+    parser.add_argument("project", help='Project name as it exists in NIS Jobs, e.g. "Arabidopsis".')
+    parser.add_argument("job", help='Job name as it exists in NIS Jobs, e.g. "TestCapture".')
+    args = parser.parse_args()
+
+    result = trigger_capture(args.project, args.job)
     print(f"shape={result['shape']} dtype={result['dtype']}")
     for name, path in result["paths"].items():
         print(f"  {name}: {path}")
