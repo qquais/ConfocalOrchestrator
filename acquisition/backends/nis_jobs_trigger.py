@@ -84,6 +84,15 @@ DIAGNOSTIC_OUTPUT_NPY = REPO_ROOT / "results" / "capture" / "captured_frame.npy"
 
 CAPTURE_DIR = REPO_ROOT / "data" / "captures"
 
+# One JSON record per capture, named with the same timestamp as that
+# capture's PNG files in CAPTURE_DIR - so you can find "what happened
+# during this specific capture" (project/job, channels, real pixel
+# size, which files it produced) without re-deriving it from the image
+# files themselves or trusting console output that's already scrolled
+# away. A SEPARATE FILE per capture (not one shared/growing log file),
+# so this stays easy to browse as capture count grows over time.
+RESULTS_LOG_DIR = REPO_ROOT / "results" / "capture_log"
+
 # CONFIRMED 2026-08-13 for the "RootTipTest" experiment's 5-FAM+TD
 # combination only - see the CAVEATS above before reusing this for a
 # different experiment/channel set.
@@ -166,6 +175,36 @@ def _read_pixel_size_um(after_mtime: float) -> float | None:
                 "to use here."
             )
         return voxel.x
+
+
+def _log_capture_result(
+    project: str, job: str, timestamp: str, result: dict
+) -> Path:
+    """Write a single JSON record for one capture to RESULTS_LOG_DIR,
+    named to match the timestamp already used for that capture's PNG
+    files in CAPTURE_DIR (e.g. capture_20260814_172615.json alongside
+    capture_20260814_172615_TD.png) - a persistent record of what
+    happened, since trigger_capture()'s return value otherwise only
+    exists in memory for whoever called it.
+    """
+    import json
+
+    RESULTS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = RESULTS_LOG_DIR / f"capture_{timestamp}.json"
+
+    record = {
+        "timestamp": timestamp,
+        "project": project,
+        "job": job,
+        "shape": result["shape"],
+        "dtype": result["dtype"],
+        "pixel_size_um_per_px": result["pixel_size_um_per_px"],
+        "paths": {name: str(p) for name, p in result["paths"].items()},
+    }
+    with open(log_path, "w") as f:
+        json.dump(record, f, indent=2)
+
+    return log_path
 
 
 def trigger_capture(
@@ -279,12 +318,17 @@ def trigger_capture(
         pixel_size_um_per_px = None
         print(f"WARNING: could not read real pixel size for this capture: {e}")
 
-    return {
+    result = {
         "paths": paths,
         "shape": tuple(arr.shape),
         "dtype": str(arr.dtype),
         "pixel_size_um_per_px": pixel_size_um_per_px,
     }
+
+    log_path = _log_capture_result(project, job, timestamp, result)
+    result["log_path"] = log_path
+
+    return result
 
 
 if __name__ == "__main__":
@@ -297,5 +341,7 @@ if __name__ == "__main__":
 
     result = trigger_capture(args.project, args.job)
     print(f"shape={result['shape']} dtype={result['dtype']}")
+    print(f"pixel_size_um_per_px={result['pixel_size_um_per_px']}")
     for name, path in result["paths"].items():
         print(f"  {name}: {path}")
+    print(f"log: {result['log_path']}")
