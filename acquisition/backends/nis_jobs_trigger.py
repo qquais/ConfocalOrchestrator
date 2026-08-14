@@ -75,12 +75,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 NIS_EXE_PATH = Path(r"C:\Program Files\NIS-Elements\nis_ar.exe")
 
+# All capture-related results/ output nests under this ONE folder
+# (2026-08-14, at the user's request, so it isn't scattered across
+# multiple similarly-named results/ folders) - split two ways inside it:
+#   results/capture/captured_frame.npy, preview.png, array_info.json
+#     - FIXED names, overwritten every run - scratch handoff from the
+#     diagnostic PythonScript task inside NIS, not a historical record.
+#   results/capture/capture_log/capture_<timestamp>.json
+#     - one PER CAPTURE, never overwritten, kept in its own subfolder
+#     since this list only grows over time and would otherwise clutter
+#     the scratch files above - see _log_capture_result() below.
+RESULTS_CAPTURE_DIR = REPO_ROOT / "results" / "capture"
+
 # Fixed-path output of the CURRENTLY-LIVE diagnostic PythonScript task
 # in NIS's "TestCapture" Job - see the CAVEATS above. If that script is
 # ever replaced with nis_jobs_capture.py's production _save_components
 # version, this module's _read_latest_capture() will need updating to
 # match its (different, per-channel) output naming instead.
-DIAGNOSTIC_OUTPUT_NPY = REPO_ROOT / "results" / "capture" / "captured_frame.npy"
+DIAGNOSTIC_OUTPUT_NPY = RESULTS_CAPTURE_DIR / "captured_frame.npy"
 
 CAPTURE_DIR = REPO_ROOT / "data" / "captures"
 
@@ -91,7 +103,7 @@ CAPTURE_DIR = REPO_ROOT / "data" / "captures"
 # files themselves or trusting console output that's already scrolled
 # away. A SEPARATE FILE per capture (not one shared/growing log file),
 # so this stays easy to browse as capture count grows over time.
-RESULTS_LOG_DIR = REPO_ROOT / "results" / "capture_log"
+RESULTS_LOG_DIR = RESULTS_CAPTURE_DIR / "capture_log"
 
 # CONFIRMED 2026-08-13 for the "RootTipTest" experiment's 5-FAM+TD
 # combination only - see the CAVEATS above before reusing this for a
@@ -181,10 +193,10 @@ def _log_capture_result(
     project: str, job: str, timestamp: str, result: dict
 ) -> Path:
     """Write a single JSON record for one capture to RESULTS_LOG_DIR,
-    named to match the timestamp already used for that capture's PNG
-    files in CAPTURE_DIR (e.g. capture_20260814_172615.json alongside
-    capture_20260814_172615_TD.png) - a persistent record of what
-    happened, since trigger_capture()'s return value otherwise only
+    named to match the timestamped subfolder already used for that
+    capture's PNG files in CAPTURE_DIR (e.g. capture_20260814_172615.json
+    for data/captures/20260814_172615/5-FAM.png, TD.png) - a persistent
+    record of what happened, since trigger_capture()'s return value otherwise only
     exists in memory for whoever called it.
     """
     import json
@@ -294,13 +306,19 @@ def trigger_capture(
     else:
         channel_names = [f"ch{i}" for i in range(num_components)]
 
-    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # One subfolder per capture (not flat filenames) - all of that
+    # capture's channels live together, e.g.
+    # data/captures/20260814_181649/5-FAM.png, TD.png - easier to
+    # browse than N similarly-prefixed files per capture in one flat
+    # folder, and the folder name alone identifies which capture it is.
+    capture_dir = CAPTURE_DIR / timestamp
+    capture_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     for i, name in enumerate(channel_names):
         channel = frame[..., i]
         safe_name = name.replace("/", "-")
-        dest = CAPTURE_DIR / f"capture_{timestamp}_{safe_name}.png"
+        dest = capture_dir / f"{safe_name}.png"
         if channel.dtype == np.uint16:
             Image.fromarray(channel, mode="I;16").save(dest)
         else:
