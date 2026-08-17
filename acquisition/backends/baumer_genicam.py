@@ -5,34 +5,34 @@
 # library against the camera's own bgapi2_usb.cti GenTL producer
 # (installed with Baumer Camera Explorer).
 #
-# NOT the confocal detector: this scope's real acquisition path is the
-# N-SPARC (CF Mode) detector via NIS-Elements (see docs/microscope-notes.md's
-# "Hardware Stack"). The Baumer VCXU-23C is a separate industrial color
-# camera found already installed on the microscope PC (Baumer Camera
-# Explorer + Toshiba Teli GenICam SDK) - NIS-Elements 6.20.02 LO
-# (build 2065) has no GenICam/USB3-Vision driver module installed, so
-# this camera isn't reachable from NIS-Elements today (blocked on a
-# Nikon installer/license, tracked separately - not addressed here).
+# NOT the confocal (N-SPARC) detector - the Baumer VCXU-23C is a separate
+# industrial color camera found already installed on the microscope PC
+# (Baumer Camera Explorer + Toshiba Teli GenICam SDK). Originally added
+# just to exercise the rest of the pipeline (focus_check, dashboard)
+# against real frames while N-SPARC capture was blocked on NIS-Elements
+# licensing/Jobs work (see docs/microscope-notes.md's "Image Capture"
+# investigation for that history).
 #
-# This module is a standalone, real-hardware capture() matching
-# nis_mock.MockNIS.capture()'s shape (same CAPTURE_DIR, same
-# timestamp+sequence filename convention, returns a Path) - useful for
-# exercising the rest of the pipeline (focus_check, dashboard) against
-# real captured frames instead of only the mock's copied sample PNG.
-# Not wired into run_protocol.py's capture_image() - it captures from the
-# wrong camera for that (see above), so doing so is a deliberate separate
-# decision, not a drop-in replacement for the "sdk" backend's TODO there.
+# 2026-08-17: now the PRIMARY capture path by deliberate decision - the
+# team decided against capturing through NIS-Elements/Jobs at all (see
+# mcp_server/loop_tools.py's header comment), so this module's capture()
+# is what mcp_server.loop_tools.get_image() actually calls. Whatever is
+# optically coupled to wherever this camera is physically mounted is
+# what gets captured - that's a hardware/alignment decision made outside
+# this code, not something this module controls.
 #
-# Requires `pip install harvesters` (confirmed against harvesters==1.4.3,
-# genicam==1.5.1). A camera can only be held by one application at a
-# time - close Baumer Camera Explorer (or any other GenICam consumer)
-# before using this.
+# Requires `pip install harvesters opencv-python` (confirmed against
+# harvesters==1.4.3, genicam==1.5.1; opencv-python added 2026-08-17,
+# Bayer demosaicing only - see capture() below). A camera can only be
+# held by one application at a time - close Baumer Camera Explorer (or
+# any other GenICam consumer) before using this.
 # ------------------------------------------------------------
 
 import os
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 from harvesters.core import Harvester
 from PIL import Image
 
@@ -99,9 +99,76 @@ class BaumerGenICam:
         self._acquirer.start()
         self._capture_count = 0
 
+    def get_settings(self) -> dict:
+        """Return the camera's current exposure/gain/pixel format, plus
+        each numeric setting's valid range, read live from the GenICam
+        node map - so a caller can see what a capture will actually use
+        without guessing.
+
+        Confirmed live 2026-08-17 against the VCXU-23C: ExposureTime is
+        in microseconds (range 28 to 60,000,000); Gain's range (1.0 to
+        251.1875) doesn't look dB-shaped, so it's reported here as a
+        plain, unit-less "gain" factor rather than assumed to be dB -
+        treat it as the camera's own arbitrary scale, not a physical
+        unit. Both ExposureAuto/GainAuto were already "Off" (manual
+        control) by default on this camera.
+        """
+        node_map = self._acquirer.remote_device.node_map
+        exposure = node_map.ExposureTime
+        gain = node_map.Gain
+        return {
+            "exposure_time_us": exposure.value,
+            "exposure_time_range_us": [exposure.min, exposure.max],
+            "gain": gain.value,
+            "gain_range": [gain.min, gain.max],
+            "pixel_format": node_map.PixelFormat.value,
+        }
+
+    def set_settings(self, exposure_time_us: float | None = None, gain: float | None = None) -> dict:
+        """Set exposure time (microseconds) and/or gain via the GenICam
+        node map. Only touches whichever parameter is actually passed -
+        omit one to leave it unchanged. Forces ExposureAuto/GainAuto to
+        "Off" first if the camera has them and a matching manual value
+        was requested, since a manual write would otherwise be silently
+        overridden by auto-exposure/auto-gain on the next frame.
+
+        Raises ValueError if a requested value is outside the camera's
+        own reported valid range (same pattern as nis_sdk.py's stage
+        moves) - values are never silently clamped.
+
+        Takes effect on the next capture() call - this only writes the
+        node map, it doesn't grab a frame itself.
+        """
+        node_map = self._acquirer.remote_device.node_map
+
+        if exposure_time_us is not None:
+            if hasattr(node_map, "ExposureAuto"):
+                node_map.ExposureAuto.value = "Off"
+            exposure = node_map.ExposureTime
+            if not (exposure.min <= exposure_time_us <= exposure.max):
+                raise ValueError(
+                    f"Requested exposure {exposure_time_us:.1f} us is outside "
+                    f"the camera's reported range ({exposure.min:.1f} to {exposure.max:.1f} us)."
+                )
+            exposure.value = exposure_time_us
+
+        if gain is not None:
+            if hasattr(node_map, "GainAuto"):
+                node_map.GainAuto.value = "Off"
+            gain_node = node_map.Gain
+            if not (gain_node.min <= gain <= gain_node.max):
+                raise ValueError(
+                    f"Requested gain {gain:.2f} is outside the camera's "
+                    f"reported range ({gain_node.min:.2f} to {gain_node.max:.2f})."
+                )
+            gain_node.value = gain
+
+        return self.get_settings()
+
     def capture(self) -> Path:
-        """Grab one live frame and save it as a timestamped PNG in
-        CAPTURE_DIR, same filename convention as MockNIS.capture()."""
+        """Grab one live frame, demosaic it to RGB, and save it as a
+        timestamped PNG in CAPTURE_DIR, same filename convention as
+        MockNIS.capture()."""
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
         self._capture_count += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -109,14 +176,19 @@ class BaumerGenICam:
 
         with self._acquirer.fetch(timeout=5) as buffer:
             component = buffer.payload.components[0]
-            frame = component.data.reshape(component.height, component.width)
-            # VCXU-23C reports BayerRG8 (confirmed 2026-08-10) - this
-            # saves the raw single-channel Bayer mosaic as-is, not
-            # demosaiced to color, since cv2 isn't a project dependency
-            # yet. Add a Bayer->RGB step (e.g.
-            # cv2.cvtColor(frame, cv2.COLOR_BayerRG2RGB)) if true color
-            # output is needed later.
-            Image.fromarray(frame, mode="L").save(dest)
+            mosaic = component.data.reshape(component.height, component.width)
+            # VCXU-23C reports BayerRG8 (confirmed 2026-08-10). cv2's
+            # Bayer color codes are named for OpenCV's own row/col
+            # convention, which doesn't always match a camera's declared
+            # GenICam PixelFormat 1:1 - COLOR_BayerRG2RGB is the literal-
+            # name match used here, but NOT yet independently verified
+            # against a known-color reference target. If captured colors
+            # come out wrong/channel-swapped once there's real light on
+            # the sensor, try COLOR_BayerGR2RGB / COLOR_BayerBG2RGB /
+            # COLOR_BayerGB2RGB instead - re-confirm before trusting this
+            # for actual analysis.
+            rgb = cv2.cvtColor(mosaic, cv2.COLOR_BayerRG2RGB)
+            Image.fromarray(rgb, mode="RGB").save(dest)
 
         return dest
 
