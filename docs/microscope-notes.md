@@ -135,6 +135,17 @@ team to confirm (already flagged as TODO in that file).
 
 ## Image Capture — Investigation (issue #20)
 
+**2026-08-17 update: this investigation's conclusion (NIS-Elements/Jobs
+is the only real-capture path) is still accurate about NIS-Elements
+itself, but is no longer what this project uses.** The team decided
+against routing capture through NIS-Elements at all - real capture now
+goes through a Baumer GenICam camera instead (`acquisition/backends/
+baumer_genicam.py`, wired into `mcp_server/loop_tools.py`'s `get_image()`
+and `acquisition/orchestration/run_protocol.py`'s `capture_image()`).
+Everything below is kept as the historical record of why NIS-Jobs was
+the only option *within NIS-Elements/the Ti2 SDK family* - still true,
+just not the path actually taken.
+
 **Confirmed: the Ti2 SDK family has NO image-capture path, in any
 binding.** Exhaustively checked 2026-07-26/27 across every layer Nikon
 ships:

@@ -1,5 +1,13 @@
 # nis_jobs_capture.py
 # ------------------------------------------------------------
+# SUPERSEDED 2026-08-17 - the team decided against real image capture
+# going through NIS-Elements/Jobs at all (see mcp_server/loop_tools.py's
+# header comment for the full rationale); real capture now goes through
+# the Baumer GenICam camera instead (acquisition/backends/
+# baumer_genicam.py). Everything below is left as-is as a historical
+# record of a confirmed-working mechanism - not something to build new
+# work against.
+#
 # CONFIRMED LIVE 2026-08-13 - the run() function below has been executed
 # against real NIS-Elements (JOBS Editor now licensed - was confirmed
 # unlicensed as of 2026-07-27, see docs/microscope-notes.md's "Image

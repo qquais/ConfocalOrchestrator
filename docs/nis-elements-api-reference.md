@@ -6,10 +6,19 @@
 > [nikon-ti2-sdk-api-reference.md](nikon-ti2-sdk-api-reference.md) for the
 > **separate** Ti2 ActiveX SDK (`NkTi2Ax`) - a different, lower-level API
 > that this project also uses. Don't confuse the two: `nis` (this doc) is
-> NIS-Elements' own application-level Python API and is the only path to
-> real image capture; `NkTi2Ax` is a device-driver SDK confirmed to have
-> **zero** capture surface (stage/turret/objective only) - see "How this
-> relates to the Ti2 ActiveX SDK" at the bottom.
+> NIS-Elements' own application-level Python API; `NkTi2Ax` is a device-
+> driver SDK confirmed to have **zero** capture surface (stage/turret/
+> objective only) - see "How this relates to the Ti2 ActiveX SDK" at the
+> bottom.
+>
+> **2026-08-17 update**: section 3 below (Jobs "PythonScript" task) used
+> to be *this project's* only path to real image capture. It no longer
+> is — the team decided against routing capture through NIS-Elements at
+> all, and it now goes through a Baumer GenICam camera instead (see
+> `acquisition/backends/baumer_genicam.py` and `mcp_server/loop_tools.py`'s
+> `get_image()`). Section 3 is kept as-is below as an accurate record of
+> what NIS-Elements itself is capable of and how that mechanism was
+> confirmed working - just no longer what this project actually uses.
 
 ## What this actually is
 

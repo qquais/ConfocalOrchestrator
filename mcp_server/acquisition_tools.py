@@ -20,8 +20,13 @@
 # range-capped amount (see nis_sdk.PFS_MAX_OFFSET_STEP_FRACTION), so it
 # can't blindly jump focus from an arbitrary starting position.
 #
-# Image capture is intentionally NOT exposed here - acquisition/planned/
-# nis_jobs_capture.py is unconfirmed/non-functional prep material.
+# Image capture is intentionally NOT exposed here - it lives in
+# mcp_server/loop_tools.py's get_image() instead (Baumer GenICam camera,
+# no NIS-Elements involved - 2026-08-17 team decision, see that module's
+# header comment for the full rationale). The earlier NIS-Jobs-based
+# capture plan this comment used to point at (acquisition/planned/
+# nis_jobs_capture.py + acquisition/backends/nis_jobs_trigger.py) is
+# superseded.
 # ------------------------------------------------------------
 
 import json

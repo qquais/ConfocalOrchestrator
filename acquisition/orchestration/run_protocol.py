@@ -11,11 +11,16 @@
 #           job-context object) if this happens to be running ON the
 #           microscope PC with NIS-Elements open, else nis_mock.MockNIS
 #           for offline development. Same as this script's original
-#           behavior.
+#           behavior. Image capture is nis_mock.MockNIS.capture() - a
+#           placeholder frame, not real image data.
 #   sdk  -> nis_sdk.NISSdk - real stage control via the Ti2 ActiveX SDK,
 #           confirmed against the Ti2-E Device Simulator - full
 #           position/z-stack/channel loop + abort confirmed end-to-end
-#           2026-07-27 (see docs/microscope-notes.md).
+#           2026-07-27 (see docs/microscope-notes.md). Image capture is a
+#           REAL frame from the Baumer GenICam camera (see
+#           capture_image()'s docstring below for what "channel" does and
+#           does not mean against this camera - NOT the N-SPARC confocal
+#           detector, and NOT routed through NIS-Elements at all).
 #
 # A third backend, "bridge" (native-macro file-polling), was removed
 # 2026-07-27 - never achieved a working round-trip, superseded by "sdk".
@@ -262,20 +267,43 @@ def get_z_slices(position: dict, z_stack: dict) -> list:
 
 
 # ── 5. Capture one image ─────────────────────────────────────────────────────
+# Module-level, opened lazily on the first real (backend="sdk") capture and
+# reused after that - matches nis_sdk.py's persistent-connection pattern.
+# Opening BaumerGenICam is not cheap (opens the GenTL producer, enumerates
+# devices, starts continuous acquisition), and capture_image() below can be
+# called many times per run (once per channel per z-slice per position per
+# timepoint) - reopening per call would be both slow and would repeatedly
+# fight anything else briefly holding the camera.
+_camera = None
+
+
 def capture_image(nis, backend: str, channel: dict) -> Path | None:
     """Capture a single image on the given channel.
 
     Returns the captured frame's path, or None if this backend can't
     produce a real frame yet.
 
-    Only backend="mock" returns a real file today (nis_mock.MockNIS.capture()
-    writes an actual image). "sdk" real image capture is a separate TODO
-    from the XY/Z stage control confirmed in nis_sdk.py - the real
-    NIS-Elements capture call is blocked on JOBS Editor licensing (see
-    acquisition/planned/nis_jobs_capture.py for the documented plan and untested
-    stub). Once confirmed live, add the real call in an
-    `if backend == "sdk": ...` branch below so focus-check (see
-    run_acquisition) has real frames on real hardware too.
+    backend="mock" returns nis_mock.MockNIS.capture()'s placeholder frame -
+    fully offline, no hardware.
+
+    backend="sdk" captures a REAL frame from the Baumer GenICam camera
+    (acquisition.backends.baumer_genicam.BaumerGenICam), setting exposure
+    from channel["exposure_ms"] first. This is NOT the N-SPARC confocal
+    detector - real image capture was deliberately moved off NIS-Elements/
+    Jobs entirely (2026-08-17 team decision; the earlier NIS-Jobs capture
+    plan in acquisition/planned/nis_jobs_capture.py and
+    acquisition/backends/nis_jobs_trigger.py is superseded - see
+    mcp_server/loop_tools.py's header comment for the full rationale).
+
+    IMPORTANT CAVEAT: the Baumer camera has no fluorescence channel/laser-
+    line control - channel["laser_wavelength"] is NOT applied to anything.
+    Every channel in a protocol run against backend="sdk" captures through
+    whatever is currently optically in front of the camera, with only
+    exposure varying between channels. This is not real multi-channel
+    fluorescence imaging - a protocol with multiple channels will still
+    produce one frame per channel entry, but they won't differ by
+    excitation/emission the way real confocal channels would, only by
+    exposure (and whatever changed physically between captures).
     """
     print(
         f"      Capturing channel '{channel['name']}' "
@@ -283,6 +311,13 @@ def capture_image(nis, backend: str, channel: dict) -> Path | None:
     )
     if backend == "mock":
         return nis.capture()
+    elif backend == "sdk":
+        global _camera
+        if _camera is None:
+            from acquisition.backends.baumer_genicam import BaumerGenICam
+            _camera = BaumerGenICam()
+        _camera.set_settings(exposure_time_us=to_plain_float(channel["exposure_ms"]) * 1000)
+        return _camera.capture()
     return None
 
 
@@ -292,10 +327,10 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
 
     After each timepoint, runs a focus-drift check (focus_check.FocusMonitor)
     against the timepoint's first captured frame - the first timepoint sets
-    the baseline, later ones are compared against it. Only meaningful when
-    capture_image() actually returns a frame (backend="mock" today - see
-    its docstring); for "sdk" the check is skipped with a note, since
-    there's no real frame yet to check.
+    the baseline, later ones are compared against it. Runs whenever
+    capture_image() actually returns a frame - both backends do now (see
+    its docstring): "mock" via nis_mock.MockNIS.capture(), "sdk" via the
+    real Baumer GenICam camera.
 
     Returns the total number of images captured.
     """
@@ -387,9 +422,8 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
                     dashboard.update_status(focus_drift_detected=result.drift_detected)
             elif backend != "mock":
                 print(
-                    f"  Focus check skipped - backend='{backend}' has no confirmed real "
-                    "capture call yet (see capture_image()'s TODO), so there's no frame "
-                    "to check focus against."
+                    f"  Focus check skipped for backend='{backend}' - no frame was "
+                    "captured this timepoint (empty positions/channels list?)."
                 )
 
         except Exception as e:

@@ -23,11 +23,15 @@
 # through the UI each time you resume or repeat that experiment.
 #
 # Does NOT trigger image capture/acquisition itself - only sets the
-# microscope up to match a saved profile. Real capture via any SDK path
-# is confirmed unavailable until JOBS Editor is licensed on this install
-# (see acquisition/planned/nis_jobs_capture.py) - applying a profile is
-# the "get the scope into the right state" half of "load a profile and
-# acquire", not the capture half.
+# microscope up to match a saved profile. Real capture is a separate
+# concern entirely, handled by the Baumer GenICam camera (see
+# mcp_server/loop_tools.py's get_image() / acquisition/backends/
+# baumer_genicam.py) - not routed through NIS-Elements/JOBS Editor at
+# all (2026-08-17 team decision). Applying a profile is the "get the
+# scope into the right state" half of "load a profile and acquire", not
+# the capture half - it also has no effect on the Baumer camera itself,
+# since that camera isn't controlled through NIS-Elements' optical-
+# configuration properties.
 #
 # Not part of the MCP server / stage-motion safety work - see
 # nis_sdk.NISSdk.get_optical_configuration/apply_optical_configuration

@@ -1,5 +1,15 @@
 # nis_jobs_trigger.py
 # ------------------------------------------------------------
+# SUPERSEDED 2026-08-17 - the team decided against real image capture
+# going through NIS-Elements/Jobs at all (see mcp_server/loop_tools.py's
+# header comment for the full rationale); real capture now goes through
+# the Baumer GenICam camera instead (acquisition/backends/
+# baumer_genicam.py), no longer via trigger_capture() below. This file
+# is left as-is as a historical record of a confirmed-working mechanism
+# (center_on_sample.py's capture_and_center() used to depend on it and
+# has since been migrated to the Baumer camera too) - not something to
+# build new work against.
+#
 # External-process trigger for the NIS-Elements "TestCapture" Job.
 # CONFIRMED LIVE 2026-08-13 (see docs/microscope-notes.md's "Image
 # Capture" section for the full history).

@@ -190,74 +190,57 @@ def center_on_sample(
 
 
 def capture_and_center(
-    project: str,
-    job: str,
-    pixel_size_um_per_px: float | None = None,
-    channel: str | None = None,
+    pixel_size_um_per_px: float,
     backend: str = "mock",
     confirm: bool = False,
+    exposure_time_us: float | None = None,
+    gain: float | None = None,
 ) -> dict:
     """The full "capture, then center" flow this file's header
-    describes: trigger a real capture (acquisition.backends.
-    nis_jobs_trigger.trigger_capture()), then center the stage on the
-    resulting image's brightest region.
+    describes: grab a real frame from the Baumer GenICam camera
+    (acquisition.backends.baumer_genicam.BaumerGenICam), then center the
+    stage on the resulting image's brightest region.
 
-    project, job: the exact Project/Job names as they exist in NIS's
-    own Jobs database - no default (see trigger_capture()'s docstring
-    for why: "Arabidopsis"/"TestCapture" was this repo's throwaway
-    debug Job, not something to silently default real runs to).
+    2026-08-20: capture no longer goes through NIS-Elements/Jobs at all
+    (team decision, 2026-08-17 - see mcp_server/loop_tools.py's header
+    comment) - this used to call acquisition.backends.nis_jobs_trigger.
+    trigger_capture() instead; that path is superseded.
 
-    pixel_size_um_per_px: normally leave this as None - trigger_capture()
-    already reads the REAL calibrated pixel size from the .nd2 file NIS
-    itself saves for this capture (confirmed 2026-08-14 to match NIS's
-    own status bar exactly), which is more reliable than a value typed
-    in by hand (which can silently go stale as objective/zoom change).
-    Only pass this explicitly to override that - e.g. if
-    trigger_capture() couldn't find the .nd2 file for this install (see
-    its own WARNING output if so) and returned pixel_size_um_per_px as
-    None, in which case this function raises rather than guessing.
+    pixel_size_um_per_px: REQUIRED, no default. The old NIS-Jobs path
+    could auto-read this from the .nd2 file NIS saved alongside each
+    capture - the Baumer camera has no equivalent auto-calibration (see
+    baumer_genicam.py's header), so there is currently no way to derive
+    this automatically. Calibrate it once per objective/zoom in use
+    (e.g. image a stage micrometer) and pass the result in - a wrong
+    value here directly produces a wrong stage move.
 
-    channel: which captured channel to center on, e.g. "TD" or
-        "5-FAM" - required if the capture returns more than one
-        channel (see nis_jobs_trigger.COMPONENT_CHANNEL_NAMES; that
-        mapping is confirmed only for the 5-FAM+TD combination, see
-        that module's caveats). Ignored if only one channel comes back.
+    exposure_time_us, gain: optional - applied via BaumerGenICam.
+    set_settings() before capturing if given; see that method's
+    docstring for confirmed valid ranges/units.
 
-    Capture triggering always talks to real NIS-Elements - there is no
-    mock capture (same as every other Jobs-API capability in this
-    repo, see nis_jobs_trigger.py). `backend`/`confirm` here apply only
-    to the STAGE MOVE half, same meaning as in center_on_sample().
+    No `channel`/multi-channel selection anymore either - the old NIS-
+    Jobs path could return several fluorescence channels per capture
+    (see nis_jobs_trigger.COMPONENT_CHANNEL_NAMES); the Baumer camera has
+    no fluorescence/laser-line control and always returns one RGB frame.
+
+    `backend`/`confirm` apply only to the STAGE MOVE half, same meaning
+    as in center_on_sample() - the camera itself has no mock/backend
+    concept (real hardware only, no simulator equivalent to fall back to).
     """
-    from acquisition.backends.nis_jobs_trigger import trigger_capture
+    from acquisition.backends.baumer_genicam import BaumerGenICam
 
-    capture_result = trigger_capture(project, job)
-    paths = capture_result["paths"]
-
-    if pixel_size_um_per_px is None:
-        pixel_size_um_per_px = capture_result["pixel_size_um_per_px"]
-        if pixel_size_um_per_px is None:
-            raise ValueError(
-                "Could not determine the real pixel size for this capture "
-                "(trigger_capture() couldn't find/read the matching .nd2 "
-                "file - see the WARNING it printed) - pass "
-                "pixel_size_um_per_px explicitly to override."
-            )
-
-    if len(paths) == 1:
-        image_path = next(iter(paths.values()))
-    elif channel is not None and channel in paths:
-        image_path = paths[channel]
-    else:
-        raise ValueError(
-            f"Capture returned {len(paths)} channel(s) ({list(paths)}) - "
-            "pass `channel` (one of the names above) to pick which one "
-            "to center on."
-        )
+    camera = BaumerGenICam()
+    try:
+        if exposure_time_us is not None or gain is not None:
+            camera.set_settings(exposure_time_us=exposure_time_us, gain=gain)
+        image_path = camera.capture()
+    finally:
+        camera.close()
 
     center_result = center_on_sample(
         image_path, pixel_size_um_per_px, backend=backend, confirm=confirm
     )
-    return {**center_result, "capture": capture_result}
+    return {**center_result, "capture_path": str(image_path)}
 
 
 def _print_center_result(result: dict) -> None:
@@ -278,40 +261,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "--image", type=str, default=None,
         help="Test against an already-captured image file instead of triggering a "
-             "fresh capture - no hardware contact at all, safe to run anytime. "
-             "Requires --pixel-size (no .nd2 file to read it from in this mode).",
+             "fresh Baumer capture - no hardware contact at all, safe to run anytime.",
     )
     parser.add_argument(
-        "--pixel-size", type=float, default=None, dest="pixel_size_um_per_px",
-        help="Microns per pixel - only needed with --image. In live mode (no --image), "
-             "this is read automatically from the real .nd2 file NIS saves; leave unset "
-             "unless you need to override that.",
+        "--pixel-size", type=float, required=True, dest="pixel_size_um_per_px",
+        help="Microns per pixel for whatever objective/zoom is in use - always required. "
+             "No auto-calibration source exists for the Baumer camera (see "
+             "capture_and_center()'s docstring) - calibrate this once and pass it in.",
     )
-    parser.add_argument("--channel", type=str, default=None, help="Which channel to center on (e.g. TD, 5-FAM) when a fresh capture returns more than one.")
-    parser.add_argument(
-        "--project", type=str, default=None,
-        help='Project name as it exists in NIS Jobs, e.g. "Arabidopsis". '
-             "Required unless --image is given (no default - see trigger_capture()'s docstring).",
-    )
-    parser.add_argument(
-        "--job", type=str, default=None,
-        help='Job name as it exists in NIS Jobs, e.g. "TestCapture". Required unless --image is given.',
-    )
+    parser.add_argument("--exposure-us", type=float, default=None, dest="exposure_time_us", help="Camera exposure time in microseconds (live capture only).")
+    parser.add_argument("--gain", type=float, default=None, help="Camera gain, camera's own unit-less scale (live capture only).")
     parser.add_argument("--backend", choices=("mock", "sdk"), default="mock")
     parser.add_argument("--confirm", action="store_true", help="Required alongside --backend sdk.")
     args = parser.parse_args()
 
     if args.image:
-        if args.pixel_size_um_per_px is None:
-            parser.error("--pixel-size is required when --image is given.")
         result = center_on_sample(
             args.image, args.pixel_size_um_per_px, backend=args.backend, confirm=args.confirm
         )
     else:
-        if not args.project or not args.job:
-            parser.error("--project and --job are required when --image is not given.")
         result = capture_and_center(
-            args.project, args.job, pixel_size_um_per_px=args.pixel_size_um_per_px,
-            channel=args.channel, backend=args.backend, confirm=args.confirm,
+            args.pixel_size_um_per_px, backend=args.backend, confirm=args.confirm,
+            exposure_time_us=args.exposure_time_us, gain=args.gain,
         )
     _print_center_result(result)
