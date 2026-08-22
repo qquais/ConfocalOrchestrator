@@ -87,15 +87,25 @@
 # there's no backend="mock" equivalent to fall back to.
 # ------------------------------------------------------------
 
+import io
 import json
 import threading
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
+from PIL import Image as _PILImage
+
 from acquisition.backends.baumer_genicam import BaumerGenICam
 from acquisition.orchestration.stage_positions import to_plain_float
 from mcp_server import acquisition_tools as _acq
+from mcp.server.mcpserver import Image as MCPImage
+
+# Long-edge size for the JPEG preview embedded in get_image()'s MCP
+# response - see that function for why this exists (full-res PNGs are
+# ~2-3MB, way more than a vision model needs to actually interpret the
+# image, and wasteful of context budget per capture).
+PREVIEW_MAX_DIMENSION = 1024
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MOVE_HISTORY_PATH = REPO_ROOT / "logs" / "move_history.jsonl"
@@ -121,6 +131,22 @@ def _get_camera() -> BaumerGenICam:
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _make_preview_image(path: Path) -> MCPImage:
+    """Downscale a full-res capture to a small JPEG for embedding in the
+    MCP response's content, so the model can actually see the picture in
+    context instead of only getting a file path it can't view. The
+    full-res PNG stays on disk (the `image` path in get_image()'s return
+    dict) for anything that needs full quality - this preview is only
+    for the model's own visual interpretation, which doesn't benefit
+    from more than ~1024px on the long edge.
+    """
+    with _PILImage.open(path) as img:
+        img.thumbnail((PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return MCPImage(data=buf.getvalue(), format="jpeg")
 
 
 def _append_move_history(record: dict) -> None:
@@ -200,12 +226,21 @@ def get_image(
     confirm: bool = False,
     exposure_time_us: float | None = None,
     gain: float | None = None,
-) -> dict:
+) -> list:
     """Grab one frame from the Baumer GenICam camera (see
     acquisition.backends.baumer_genicam.BaumerGenICam) and return it
     together with the exact stage position associated with it - read
     immediately after the frame is captured, so the two stay coupled
     without the model needing a separate get_pos() call.
+
+    Returns [metadata_dict, image] - the metadata dict (position,
+    timestamps, full-res file path) as one content block, plus an
+    actual viewable image as a second content block (a downscaled JPEG
+    preview - see _make_preview_image - embedded directly in the MCP
+    response, not just a path the model can't see). The full-resolution
+    PNG is still saved to disk at metadata_dict["image"] for anything
+    that needs full quality (analysis, calibration, etc.) - the embedded
+    preview is only for the model's own visual interpretation.
 
     No NIS-Elements involved - connects directly to the camera via its
     GenTL producer (see BaumerGenICam/find_cti_files), independent of any
@@ -241,12 +276,67 @@ def get_image(
     image_path = camera.capture()
     pos = get_pos(backend="sdk")
 
-    return {
+    metadata = {
         "image": str(image_path),
         "position": pos["position"],
         "captured_at": pos["measured_at"],
         "monotonic_ms": pos["monotonic_ms"],
     }
+    return [metadata, _make_preview_image(image_path)]
+
+
+def calibrate_pixel_size(
+    image_path: str,
+    known_spacing_um: float,
+    axis: str = "horizontal",
+) -> list:
+    """Compute real microns-per-pixel from an image of a periodic
+    calibration reference (e.g. a stage micrometer's ruled markings) -
+    see acquisition.monitoring.pixel_calibration.calibrate_pixel_size for
+    the underlying FFT-based detection method. UNTESTED against a real
+    calibration slide as of 2026-08-21 (none was available) - validated
+    only against a synthetic image with exactly known spacing, which
+    confirmed the detection math itself is correct.
+
+    Deliberately a separate, deterministic tool rather than asking the
+    model to eyeball pixel spacing directly from the image - useful for
+    the model to decide WHICH image/reference to use and what axis/
+    known_spacing_um to pass (it can see the image via get_image()'s
+    embedded preview), but the actual measurement is real signal
+    processing, not a visual guess.
+
+    image_path: path to an already-captured image showing a calibration
+    reference - typically the "image" path from a prior get_image() call.
+
+    known_spacing_um: the real-world distance between adjacent marks on
+    the reference actually in the image - this can't be inferred from
+    the image alone, it has to be known ahead of time (e.g. "10" for a
+    stage micrometer with 10um divisions).
+
+    axis: "horizontal" (marks are vertical lines spaced along X) or
+    "vertical" (marks are horizontal lines spaced along Y) - must match
+    how the ruling is actually oriented in the image.
+
+    Returns [result, overlay_image] - result has um_per_pixel,
+    detected_pixel_spacing, and confidence_ratio (well above ~5-10 means
+    a clear periodic pattern was found; near 1 means it probably wasn't -
+    don't trust a low-confidence result). overlay_image is the detected
+    spacing drawn as red lines over the original, embedded directly in
+    the response so the result can be visually checked against the real
+    markings instead of trusted as a black-box number.
+    """
+    from acquisition.monitoring.pixel_calibration import (
+        calibrate_pixel_size as _calibrate_pixel_size,
+        make_calibration_overlay,
+    )
+
+    result = _calibrate_pixel_size(image_path, known_spacing_um, axis=axis)
+
+    source = Path(image_path)
+    overlay_path = source.with_name(source.stem + "_calibration_overlay.png")
+    make_calibration_overlay(source, result["detected_pixel_spacing"], axis, overlay_path)
+
+    return [result, _make_preview_image(overlay_path)]
 
 
 def get_move_history(limit: int = 50) -> dict:

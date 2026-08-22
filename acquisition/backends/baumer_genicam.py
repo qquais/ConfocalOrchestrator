@@ -174,6 +174,27 @@ class BaumerGenICam:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = CAPTURE_DIR / f"capture_{timestamp}_{self._capture_count:04d}.png"
 
+        # Drain any backlog of already-queued frames before grabbing the
+        # real one. The acquirer streams continuously for this object's
+        # whole lifetime (started once in __init__, never stopped between
+        # capture() calls, for connection-reuse performance - see the
+        # class docstring) - if nothing calls fetch() for a while, filled
+        # buffers just pile up in the completion queue instead of being
+        # replaced by newer frames. A later fetch() then returns whatever
+        # stale frame is at the front of that backlog, not a fresh one -
+        # confirmed 2026-08-21: a real ~27mm stage move and several
+        # minutes apart still returned a visibly identical old frame
+        # until this drain was added. A short per-fetch timeout here
+        # means "give up as soon as the backlog is empty", not "wait for
+        # a new frame" - once it raises/times out, the queue is caught up
+        # to live and the real fetch below gets a genuinely current one.
+        while True:
+            try:
+                with self._acquirer.fetch(timeout=0.01):
+                    pass
+            except Exception:
+                break
+
         with self._acquirer.fetch(timeout=5) as buffer:
             component = buffer.payload.components[0]
             mosaic = component.data.reshape(component.height, component.width)
