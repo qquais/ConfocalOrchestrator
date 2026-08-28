@@ -51,3 +51,4 @@ sdk_filelist_dump.txt
 
 # Logs
 *.log
+logs/

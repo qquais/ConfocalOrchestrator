@@ -12,6 +12,15 @@ protocol:
   created_by: "Qurratul Ain Quais"
   version: "0.2"
 
+# --- IMAGING PROFILE (optional) ---
+# Name of a saved per-experiment imaging profile (objective, filters, DIC,
+# illumination - see acquisition/orchestration/imaging_profile.py) to apply
+# via the SDK before this run starts. Matches a
+# protocols/imaging_profile_<name>.json file, e.g. "current_setup" for
+# protocols/imaging_profile_current_setup.json. Omit this field to leave the
+# microscope's current setup as-is. SDK backend only - no mock equivalent.
+# imaging_profile: "current_setup"
+
 # --- MICROSCOPE OBJECTIVE ---
 # The "objective" is the lens closest to the sample. Higher magnification lets you
 # see finer detail but shrinks the field of view. "Oil immersion" means a drop of

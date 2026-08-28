@@ -16,6 +16,12 @@ tifffile==2026.7.31
 PyYAML==6.0.3
 fastapi==0.141.1
 uvicorn==0.52.1
+mcp==2.0.0
+
+# --- Camera / GenICam (active) --- see acquisition/backends/baumer_genicam.py
+harvesters==1.4.3
+genicam==1.5.1
+opencv-python==5.0.0.93  # Bayer demosaicing only (cv2.cvtColor) - see baumer_genicam.py
 
 # --- Acquisition (future) ---
 # aicsimageio
@@ -30,8 +36,6 @@ pytz==2026.3.post1
 # --- System ---
 pywin32==312
 
-# --- Image Processing & Analysis (future) ---
-# opencv-python
 
 # --- Dev / Testing ---
 # pytest

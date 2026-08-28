@@ -26,6 +26,15 @@ from PIL import Image
 # converted from mm to microns to match the units used by the NIS API.
 X_LIMIT_UM = 57_000.0
 Y_LIMIT_UM = 36_500.0
+Z_LIMIT_LOWER_UM = 0.0
+Z_LIMIT_UPPER_UM = 10_000.0
+
+# Mirrors nis_sdk.NISSdk's MAX_XY_STEP_UM/MAX_Z_STEP_UM - kept in sync
+# deliberately, so testing against the mock backend catches the same
+# per-call step-size safety violations the real backend would reject,
+# instead of only discovering them on real hardware.
+MAX_XY_STEP_UM = 5000.0
+MAX_Z_STEP_UM = 50.0
 
 # Realistic movement delay for XY_Move, based on the Ti2-E's documented max
 # XY stage speed (docs/microscope-notes.md: "Max speed: 25mm/sec"). The
@@ -102,10 +111,21 @@ class MockNIS:
         Logs the move and sleeps for a distance-proportional delay based on
         the Ti2-E's documented max stage speed (25mm/sec), so timing in
         code developed against this mock is at least roughly realistic.
+
+        Raises ValueError without moving anything if the step is larger
+        than MAX_XY_STEP_UM - mirrors nis_sdk.NISSdk.XY_Move's safety cap,
+        so mock-mode testing catches the same violations real hardware
+        would reject.
         """
         x, y = float(x), float(y)
         self._check_xy_limits(x, y)
         distance_um = ((x - self._x) ** 2 + (y - self._y) ** 2) ** 0.5
+        if distance_um > MAX_XY_STEP_UM:
+            raise ValueError(
+                f"Requested XY move of {distance_um:.1f} um exceeds the "
+                f"{MAX_XY_STEP_UM:.0f} um per-call safety limit. Break large "
+                f"moves into smaller confirmed steps."
+            )
         delay_sec = distance_um / XY_MAX_SPEED_UM_PER_SEC
         print(
             f"[MockNIS] XY_Move: ({self._x:.2f}, {self._y:.2f}) -> "
@@ -128,8 +148,26 @@ class MockNIS:
         Logs the move and sleeps for a small fixed delay (Z_MOVE_DELAY_SEC) -
         the real focus-drive speed isn't documented, so this is a
         placeholder rather than a physics-based figure like XY_Move's.
+
+        Raises ValueError without moving anything if the step is larger
+        than MAX_Z_STEP_UM, or if the target is outside
+        Z_LIMIT_LOWER_UM..Z_LIMIT_UPPER_UM - mirrors nis_sdk.NISSdk.Z_Move's
+        safety checks, so mock-mode testing catches the same violations
+        real hardware would reject.
         """
         z = float(z)
+        if not Z_LIMIT_LOWER_UM <= z <= Z_LIMIT_UPPER_UM:
+            raise ValueError(
+                f"Z position {z:.2f} um is outside the stage travel limit "
+                f"of {Z_LIMIT_LOWER_UM:.0f} to {Z_LIMIT_UPPER_UM:.0f} um."
+            )
+        step_um = abs(z - self._z)
+        if step_um > MAX_Z_STEP_UM:
+            raise ValueError(
+                f"Requested Z move of {step_um:.1f} um exceeds the "
+                f"{MAX_Z_STEP_UM:.0f} um per-call safety limit. Break large "
+                f"focus changes into smaller confirmed steps."
+            )
         print(f"[MockNIS] Z_Move: {self._z:.2f} -> {z:.2f} um (simulated {Z_MOVE_DELAY_SEC:.3f}s)")
         time.sleep(Z_MOVE_DELAY_SEC)
         self._z = z

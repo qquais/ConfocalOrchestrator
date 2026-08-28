@@ -11,11 +11,16 @@
 #           job-context object) if this happens to be running ON the
 #           microscope PC with NIS-Elements open, else nis_mock.MockNIS
 #           for offline development. Same as this script's original
-#           behavior.
+#           behavior. Image capture is nis_mock.MockNIS.capture() - a
+#           placeholder frame, not real image data.
 #   sdk  -> nis_sdk.NISSdk - real stage control via the Ti2 ActiveX SDK,
 #           confirmed against the Ti2-E Device Simulator - full
 #           position/z-stack/channel loop + abort confirmed end-to-end
-#           2026-07-27 (see docs/microscope-notes.md).
+#           2026-07-27 (see docs/microscope-notes.md). Image capture is a
+#           REAL frame from the Baumer GenICam camera (see
+#           capture_image()'s docstring below for what "channel" does and
+#           does not mean against this camera - NOT the N-SPARC confocal
+#           detector, and NOT routed through NIS-Elements at all).
 #
 # A third backend, "bridge" (native-macro file-polling), was removed
 # 2026-07-27 - never achieved a working round-trip, superseded by "sdk".
@@ -27,6 +32,7 @@
 # ------------------------------------------------------------
 
 import argparse
+import math
 import threading
 import time
 from datetime import datetime
@@ -39,6 +45,14 @@ from PIL import Image
 
 from acquisition.monitoring import dashboard  # this repo's acquisition/monitoring/dashboard.py - shared status dict + web UI
 from acquisition.monitoring.focus_check import FocusMonitor
+
+# Imported from nis_mock (not nis_sdk) specifically because nis_mock has no
+# hardware dependency (pywin32/NkTi2Ax) and is always importable, even on
+# non-Windows dev machines using --backend mock - nis_sdk is only ever
+# imported lazily, inside resolve_backend()'s "sdk" branch. Both modules
+# deliberately keep these values in sync (see nis_mock.py's comment) so
+# using nis_mock's here is equivalent to nis_sdk's for chunking purposes.
+from acquisition.backends.nis_mock import MAX_XY_STEP_UM, MAX_Z_STEP_UM
 
 # Path to the protocol file, relative to this script - matches the existing
 # acquisition/ + protocols/ folder layout. Overridable via --protocol.
@@ -92,6 +106,14 @@ def parse_args() -> argparse.Namespace:
         "--protocol", type=Path, default=PROTOCOL_PATH,
         help=f"Path to the protocol YAML file (default: {PROTOCOL_PATH}).",
     )
+    parser.add_argument(
+        "--yes", action="store_true",
+        help="Skip the interactive confirm_start() prompt - for non-interactive "
+             "launches (e.g. mcp_server.acquisition_tools.start_protocol_run), "
+             "where the caller already obtained confirmation via its own "
+             "confirm=True gate before launching this process. Direct terminal "
+             "use should omit this and go through the normal prompt.",
+    )
     return parser.parse_args()
 
 
@@ -133,7 +155,7 @@ def start_dashboard_server() -> None:
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    print("Dashboard running at http://localhost:8000 (or http://<this-pc-ip>:8000 remotely)")
+    dashboard.print_startup_banner()
 
 
 # ── 2. Load the protocol file ────────────────────────────────────────────────
@@ -171,6 +193,8 @@ def print_summary(protocol: dict) -> None:
         f"interval {interval} min ({'continuous' if interval == 0 else 'delayed'} between cycles)"
     )
     print(f"Save to:     {protocol['output']['save_directory']}")
+    profile_name = protocol.get("imaging_profile")
+    print(f"Imaging profile: {profile_name if profile_name else '(none - using current microscope setup)'}")
     print("=" * 60)
 
 
@@ -182,6 +206,49 @@ def confirm_start() -> bool:
     print("  correctly loaded before continuing.")
     answer = input("  Type 'yes' to start the acquisition, anything else to cancel: ").strip().lower()
     return answer == "yes"
+
+
+# ── Break large moves into safe sub-steps ────────────────────────────────────
+# nis_sdk.NISSdk and nis_mock.MockNIS both cap a single XY_Move/Z_Move call
+# to MAX_XY_STEP_UM/MAX_Z_STEP_UM (2026-08-10 safety fix) - meant for
+# ad-hoc, individually-approved MCP/chat commands, where a caller
+# requesting a huge jump in one call is treated as a likely mistake. That
+# doesn't fit this script's safety model: confirm_start() already makes
+# the user confirm the ENTIRE protocol (specific positions, from a
+# human-authored YAML file) once before any motion starts, so a big jump
+# between two already-confirmed positions isn't an unreviewed action -
+# it's just a move the cap wasn't designed to reject. Without chunking,
+# the first over-cap move (very likely: the first z-slice at a new
+# position, if its base_z differs from wherever the previous position's
+# z-stack ended) throws, which run_acquisition()'s per-timepoint
+# try/except then treats as "abandon the rest of this timepoint" -
+# silently skipping most of the planned work instead of failing loudly.
+def move_xy_stepped(nis, x: float, y: float) -> None:
+    """Move to an absolute (x, y) position, breaking it into sub-moves of
+    at most MAX_XY_STEP_UM each if the direct distance exceeds that."""
+    start_x, start_y = nis.XY_GetPosition()
+    distance = ((x - start_x) ** 2 + (y - start_y) ** 2) ** 0.5
+    if distance <= MAX_XY_STEP_UM:
+        nis.XY_Move(x, y)
+        return
+    steps = math.ceil(distance / MAX_XY_STEP_UM)
+    for i in range(1, steps + 1):
+        frac = i / steps
+        nis.XY_Move(start_x + (x - start_x) * frac, start_y + (y - start_y) * frac)
+
+
+def move_z_stepped(nis, z: float) -> None:
+    """Move to an absolute z position, breaking it into sub-moves of at
+    most MAX_Z_STEP_UM each if the direct distance exceeds that."""
+    start_z = nis.Z_GetPosition()
+    distance = abs(z - start_z)
+    if distance <= MAX_Z_STEP_UM:
+        nis.Z_Move(z)
+        return
+    steps = math.ceil(distance / MAX_Z_STEP_UM)
+    for i in range(1, steps + 1):
+        frac = i / steps
+        nis.Z_Move(start_z + (z - start_z) * frac)
 
 
 # ── 4. Work out the Z positions for one z-stack ──────────────────────────────
@@ -200,20 +267,43 @@ def get_z_slices(position: dict, z_stack: dict) -> list:
 
 
 # ── 5. Capture one image ─────────────────────────────────────────────────────
+# Module-level, opened lazily on the first real (backend="sdk") capture and
+# reused after that - matches nis_sdk.py's persistent-connection pattern.
+# Opening BaumerGenICam is not cheap (opens the GenTL producer, enumerates
+# devices, starts continuous acquisition), and capture_image() below can be
+# called many times per run (once per channel per z-slice per position per
+# timepoint) - reopening per call would be both slow and would repeatedly
+# fight anything else briefly holding the camera.
+_camera = None
+
+
 def capture_image(nis, backend: str, channel: dict) -> Path | None:
     """Capture a single image on the given channel.
 
     Returns the captured frame's path, or None if this backend can't
     produce a real frame yet.
 
-    Only backend="mock" returns a real file today (nis_mock.MockNIS.capture()
-    writes an actual image). "sdk" real image capture is a separate TODO
-    from the XY/Z stage control confirmed in nis_sdk.py - the real
-    NIS-Elements capture call is blocked on JOBS Editor licensing (see
-    acquisition/planned/nis_jobs_capture.py for the documented plan and untested
-    stub). Once confirmed live, add the real call in an
-    `if backend == "sdk": ...` branch below so focus-check (see
-    run_acquisition) has real frames on real hardware too.
+    backend="mock" returns nis_mock.MockNIS.capture()'s placeholder frame -
+    fully offline, no hardware.
+
+    backend="sdk" captures a REAL frame from the Baumer GenICam camera
+    (acquisition.backends.baumer_genicam.BaumerGenICam), setting exposure
+    from channel["exposure_ms"] first. This is NOT the N-SPARC confocal
+    detector - real image capture was deliberately moved off NIS-Elements/
+    Jobs entirely (2026-08-17 team decision; the earlier NIS-Jobs capture
+    plan in acquisition/planned/nis_jobs_capture.py and
+    acquisition/backends/nis_jobs_trigger.py is superseded - see
+    mcp_server/loop_tools.py's header comment for the full rationale).
+
+    IMPORTANT CAVEAT: the Baumer camera has no fluorescence channel/laser-
+    line control - channel["laser_wavelength"] is NOT applied to anything.
+    Every channel in a protocol run against backend="sdk" captures through
+    whatever is currently optically in front of the camera, with only
+    exposure varying between channels. This is not real multi-channel
+    fluorescence imaging - a protocol with multiple channels will still
+    produce one frame per channel entry, but they won't differ by
+    excitation/emission the way real confocal channels would, only by
+    exposure (and whatever changed physically between captures).
     """
     print(
         f"      Capturing channel '{channel['name']}' "
@@ -221,6 +311,13 @@ def capture_image(nis, backend: str, channel: dict) -> Path | None:
     )
     if backend == "mock":
         return nis.capture()
+    elif backend == "sdk":
+        global _camera
+        if _camera is None:
+            from acquisition.backends.baumer_genicam import BaumerGenICam
+            _camera = BaumerGenICam()
+        _camera.set_settings(exposure_time_us=to_plain_float(channel["exposure_ms"]) * 1000)
+        return _camera.capture()
     return None
 
 
@@ -230,10 +327,10 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
 
     After each timepoint, runs a focus-drift check (focus_check.FocusMonitor)
     against the timepoint's first captured frame - the first timepoint sets
-    the baseline, later ones are compared against it. Only meaningful when
-    capture_image() actually returns a frame (backend="mock" today - see
-    its docstring); for "sdk" the check is skipped with a note, since
-    there's no real frame yet to check.
+    the baseline, later ones are compared against it. Runs whenever
+    capture_image() actually returns a frame - both backends do now (see
+    its docstring): "mock" via nis_mock.MockNIS.capture(), "sdk" via the
+    real Baumer GenICam camera.
 
     Returns the total number of images captured.
     """
@@ -288,13 +385,13 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
 
                 x = to_plain_float(position["x"])
                 y = to_plain_float(position["y"])
-                nis.XY_Move(x, y)
+                move_xy_stepped(nis, x, y)
 
                 # ── Step through the z-stack at this position ────────────
                 z_slices = get_z_slices(position, z_stack)
                 for z_index, z in enumerate(z_slices, start=1):
                     print(f"    Z-slice {z_index}/{len(z_slices)}: Z={z:.2f} um")
-                    nis.Z_Move(z)
+                    move_z_stepped(nis, z)
 
                     # ── Capture every channel at this z-slice ─────────────
                     for channel in channels:
@@ -325,9 +422,8 @@ def run_acquisition(protocol: dict, nis, ctx, backend: str) -> int:
                     dashboard.update_status(focus_drift_detected=result.drift_detected)
             elif backend != "mock":
                 print(
-                    f"  Focus check skipped - backend='{backend}' has no confirmed real "
-                    "capture call yet (see capture_image()'s TODO), so there's no frame "
-                    "to check focus against."
+                    f"  Focus check skipped for backend='{backend}' - no frame was "
+                    "captured this timepoint (empty positions/channels list?)."
                 )
 
         except Exception as e:
@@ -363,11 +459,34 @@ def main():
     print("=" * 60)
 
     # ── SAFETY: nothing below this line runs without explicit confirmation ──
-    if not confirm_start():
+    if not args.yes and not confirm_start():
         print("Acquisition cancelled by user. No stage motion performed.")
         return
 
     nis, ctx = resolve_backend(args.backend)
+
+    # ── Apply this experiment's imaging profile, if the protocol names one ──
+    # Still behind the confirm_start() gate above - applying a profile
+    # physically moves the turret/filter wheels, same safety class as stage
+    # motion (see nis_sdk.NISSdk.apply_optical_configuration's docstring).
+    imaging_profile_name = protocol.get("imaging_profile")
+    if imaging_profile_name:
+        if args.backend == "sdk":
+            from acquisition.orchestration.imaging_profile import ImagingProfileManager
+
+            print(f"\nApplying imaging profile '{imaging_profile_name}'...")
+            try:
+                applied = ImagingProfileManager().apply(imaging_profile_name)
+            except FileNotFoundError as e:
+                print(f"Failed to apply imaging profile: {e}")
+                return
+            for name, value in applied.items():
+                print(f"  {name}: {value}")
+        else:
+            print(
+                f"\nSkipping imaging profile '{imaging_profile_name}' - "
+                "imaging_profile.py is SDK/real-hardware only, no mock equivalent."
+            )
 
     start_dashboard_server()
 

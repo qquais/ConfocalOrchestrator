@@ -1,0 +1,362 @@
+# loop_tools.py
+# ------------------------------------------------------------
+# Minimal MCP surface for the normal agent control loop:
+#   get_image()         - capture + the stage position that goes with it
+#   get_pos()            - a lightweight, on-demand position sync primitive
+#   move()               - move XY, return the ACTUAL resulting position
+#   get_move_history()   - every point move() has visited this session
+#
+# NOT wired into server.py yet - deliberately kept separate so it can be
+# tried/registered independently of the existing acquisition_tools.py
+# tool set. See mcp.add_tool(...) calls in server.py for the pattern to
+# follow when ready.
+#
+# NO NIS-ELEMENTS ANYWHERE IN THIS FILE (2026-08-17, explicit team
+# decision - manager does not want capture going through NIS): get_image()
+# captures via acquisition.backends.baumer_genicam.BaumerGenICam - a
+# GenICam/GenTL camera reached directly through the `harvesters` library,
+# no NIS-Elements process, no Jobs, no nis_ar.exe. get_pos()/move() were
+# already NIS-Elements-independent for real hardware (backend="sdk" talks
+# to the Ti2 ActiveX SDK directly - Nikon-approved, does not require
+# NIS-Elements to be running); backend="mock" falls back to nis_mock.
+# MockNIS for offline dev, which also has no NIS-Elements dependency (see
+# stage_positions.py - `import nis` only ever succeeds inside NIS-
+# Elements' own bundled Python, never from this repo's .venv). So nothing
+# in this file's real-hardware path touches NIS-Elements software at all.
+#
+# WHY get_move_history(): move() already returns the resulting position
+# of ONE move - this answers "where has the stage actually been", e.g.
+# "did I already image this area" or "what path did I take to get here"
+# without the model needing to remember/re-derive it turn over turn.
+# Every move() call appends one record (requested target, actual
+# resulting position, timestamps, backend) to logs/move_history.jsonl -
+# append-only, one JSON object per line, so concurrent/repeated runs
+# never need a read-modify-write of the whole file (unlike
+# stage_positions.py's saved-positions file, which IS fully rewritten
+# per change - that's fine there because it's small/keyed by label, not
+# an ever-growing log). This is a plain history log, not the same thing
+# as StagePositionManager's saved/named positions - nothing here is
+# deduplicated or labeled, it's every move, in order.
+#
+# WHY THIS SHAPE (design discussion with the team, 2026-08-17):
+# Stage position is volatile physical state - if it's pushed into the
+# model's context continuously (e.g. injected into the system prompt),
+# the model's belief about "where the stage is" can go stale between
+# inference and action (a human bumps the joystick, another process
+# moves it, etc.), and the model acts on a position that's no longer
+# true. The fix is to stop treating position as ambient context and
+# instead attach it as a return value on the calls that already touch
+# it - get_image() and move() both return the position they observed,
+# so the model rarely needs to call get_pos() at all. get_pos() is
+# there mainly as an explicit sync primitive: call it when a human/
+# other process may have moved the stage, when enough time has passed
+# that cached state might be stale, or when you want position without
+# paying for a full image capture.
+#
+# WHY NO get_time(): wall-clock time is something the agent/runtime
+# already knows - no reason to ask the microscope for it. What matters
+# is DEVICE/EVENT time (when was this physical fact true), so that's
+# attached as metadata on every call instead (measured_at/captured_at,
+# ISO-8601 wall clock; monotonic_ms, so "218ms after this image" style
+# reasoning isn't thrown off by clock corrections).
+#
+# WHY NO stage_revision (yet): a monotonic counter that increments on
+# every physical stage move (from any actor) would let a server detect
+# "the agent's cached position is stale" without a full get_pos(), and
+# would let move() take an optional expected_revision to reject a move
+# if the stage changed since the agent last looked. That mainly earns
+# its cost for RELATIVE moves (dx/dy - the operation depends on the
+# stage still being where the agent thinks it is) - this move() is
+# absolute-only, so it buys little today. Left out until concurrent-
+# control/race-condition problems actually show up; see get_pos()'s
+# docstring for the intended trigger conditions.
+#
+# WHY move() IS XY-ONLY (not x/y/z like the original 3-function sketch):
+# acquisition_tools.py already establishes - deliberately - that a
+# blind absolute Z move must never be reachable from a chat prompt (risk
+# of crashing the objective into the sample); move_z_absolute exists
+# there for internal/scripted use only and is never registered as an
+# MCP tool. This file keeps that same boundary rather than reintroducing
+# it via a combined x/y/z move(). Z is out of scope here - use
+# acquisition_tools.nudge_focus_offset (PFS-based, range-capped) if a
+# tool needs to touch focus.
+#
+# WHY get_image() REQUIRES confirm=True: unlike get_pos()/move(), it
+# fires a real camera - same safety-gate pattern used elsewhere in this
+# repo for anything that touches real hardware, even when (as here)
+# there's no backend="mock" equivalent to fall back to.
+# ------------------------------------------------------------
+
+import io
+import json
+import threading
+from datetime import datetime
+from pathlib import Path
+from time import monotonic
+
+from PIL import Image as _PILImage
+
+from acquisition.backends.baumer_genicam import BaumerGenICam
+from acquisition.orchestration.stage_positions import to_plain_float
+from mcp_server import acquisition_tools as _acq
+from mcp.server.mcpserver import Image as MCPImage
+
+# Long-edge size for the JPEG preview embedded in get_image()'s MCP
+# response - see that function for why this exists (full-res PNGs are
+# ~2-3MB, way more than a vision model needs to actually interpret the
+# image, and wasteful of context budget per capture).
+PREVIEW_MAX_DIMENSION = 1024
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MOVE_HISTORY_PATH = REPO_ROOT / "logs" / "move_history.jsonl"
+
+# Persistent camera connection, opened lazily on the first get_image()
+# call and reused after that - matches nis_sdk.py's pattern for the
+# stage connection (constructing BaumerGenICam() is not cheap: it opens
+# the GenTL producer, enumerates devices, and starts continuous
+# acquisition - see that class's __init__). A camera can only be held
+# open by one process at a time, so this also means: close any other
+# GenICam consumer (Baumer Camera Explorer, etc.) before the first call.
+_camera: "BaumerGenICam | None" = None
+_camera_lock = threading.Lock()
+
+
+def _get_camera() -> BaumerGenICam:
+    global _camera
+    with _camera_lock:
+        if _camera is None:
+            _camera = BaumerGenICam()
+        return _camera
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _make_preview_image(path: Path) -> MCPImage:
+    """Downscale a full-res capture to a small JPEG for embedding in the
+    MCP response's content, so the model can actually see the picture in
+    context instead of only getting a file path it can't view. The
+    full-res PNG stays on disk (the `image` path in get_image()'s return
+    dict) for anything that needs full quality - this preview is only
+    for the model's own visual interpretation, which doesn't benefit
+    from more than ~1024px on the long edge.
+    """
+    with _PILImage.open(path) as img:
+        img.thumbnail((PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return MCPImage(data=buf.getvalue(), format="jpeg")
+
+
+def _append_move_history(record: dict) -> None:
+    """Append one move record as a single JSON line to MOVE_HISTORY_PATH.
+
+    Append-only by design (see this file's header) - never reads or
+    rewrites prior entries, so this stays cheap regardless of how long
+    the history grows.
+    """
+    MOVE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(MOVE_HISTORY_PATH, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def get_pos(backend: str = "mock") -> dict:
+    """Return the current stage (x, y, z) position, in microns - a cheap,
+    on-demand sync primitive rather than something to call before every
+    move.
+
+    Reach for this when: a human may have moved the stage (joystick),
+    another controller/process may have moved it, enough time has passed
+    that a previously-observed position might be stale, or you want
+    position without paying for a full get_image() capture. During
+    normal operation, get_image() and move() already return position as
+    part of their result, so most loops don't need this at all.
+
+    backend: "mock" (default, safe) or "sdk" (real hardware). Read-only -
+    no confirmation required for either backend.
+    """
+    nis = _acq._get_backend(backend)
+    x, y = nis.XY_GetPosition()
+    z = nis.Z_GetPosition()
+    return {
+        "position": {"x": to_plain_float(x), "y": to_plain_float(y), "z": to_plain_float(z)},
+        "measured_at": _now_iso(),
+        "monotonic_ms": int(monotonic() * 1000),
+        "backend": backend,
+    }
+
+
+def move(x: float, y: float, backend: str = "mock", confirm: bool = False) -> dict:
+    """Move the XY stage to an absolute (x, y) position, in microns, and
+    return the ACTUAL resulting position - not merely "success". A real
+    move commonly lands slightly off the requested target, so callers
+    should treat the returned position as ground truth, not an echo of
+    the input.
+
+    Z is intentionally not accepted here - see this file's header
+    comment for why absolute Z stays out of the chat-reachable surface.
+
+    backend: "mock" (default, safe) or "sdk" (real hardware - requires
+    confirm=True, same gate as every other move tool in this repo).
+    """
+    _acq._require_confirm_for_sdk(backend, confirm)
+    nis = _acq._get_backend(backend)
+
+    started_at = _now_iso()
+    nis.XY_Move(x, y)
+    new_x, new_y = nis.XY_GetPosition()
+    z = nis.Z_GetPosition()
+    completed_at = _now_iso()
+
+    result = {
+        "position": {"x": to_plain_float(new_x), "y": to_plain_float(new_y), "z": to_plain_float(z)},
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "backend": backend,
+    }
+    _append_move_history({
+        "requested": {"x": to_plain_float(x), "y": to_plain_float(y)},
+        **result,
+    })
+    return result
+
+
+def get_image(
+    confirm: bool = False,
+    exposure_time_us: float | None = None,
+    gain: float | None = None,
+) -> list:
+    """Grab one frame from the Baumer GenICam camera (see
+    acquisition.backends.baumer_genicam.BaumerGenICam) and return it
+    together with the exact stage position associated with it - read
+    immediately after the frame is captured, so the two stay coupled
+    without the model needing a separate get_pos() call.
+
+    Returns [metadata_dict, image] - the metadata dict (position,
+    timestamps, full-res file path) as one content block, plus an
+    actual viewable image as a second content block (a downscaled JPEG
+    preview - see _make_preview_image - embedded directly in the MCP
+    response, not just a path the model can't see). The full-resolution
+    PNG is still saved to disk at metadata_dict["image"] for anything
+    that needs full quality (analysis, calibration, etc.) - the embedded
+    preview is only for the model's own visual interpretation.
+
+    No NIS-Elements involved - connects directly to the camera via its
+    GenTL producer (see BaumerGenICam/find_cti_files), independent of any
+    NIS-Elements process. Real hardware only (no mock equivalent - there's
+    nothing to simulate a camera trigger against) - requires confirm=True,
+    same safety-gate pattern as every other real-hardware-touching tool in
+    this repo. Position is read via backend="sdk" (Ti2 ActiveX SDK), the
+    same NIS-Elements-independent hardware path move()/get_pos() use.
+
+    exposure_time_us, gain: optional - if given, applied via
+    BaumerGenICam.set_settings() before capturing (raises ValueError if
+    outside the camera's own reported valid range - see that method's
+    docstring for confirmed ranges/units, notably that "gain" is the
+    camera's own unit-less scale, not dB). Omit either to leave it at
+    whatever the camera is already set to (persists across calls, since
+    the camera connection - and therefore its settings - is reused, not
+    reopened, between get_image() calls).
+
+    The saved image is real RGB (demosaiced from the sensor's raw
+    BayerRG8 via BaumerGenICam.capture()) - see that method's docstring
+    for the one unconfirmed detail (which Bayer color code is actually
+    correct for this camera).
+    """
+    if not confirm:
+        raise PermissionError(
+            "get_image fires a real camera and requires confirm=True. "
+            "Refusing to proceed without explicit confirmation."
+        )
+
+    camera = _get_camera()
+    if exposure_time_us is not None or gain is not None:
+        camera.set_settings(exposure_time_us=exposure_time_us, gain=gain)
+    image_path = camera.capture()
+    pos = get_pos(backend="sdk")
+
+    metadata = {
+        "image": str(image_path),
+        "position": pos["position"],
+        "captured_at": pos["measured_at"],
+        "monotonic_ms": pos["monotonic_ms"],
+    }
+    return [metadata, _make_preview_image(image_path)]
+
+
+def calibrate_pixel_size(
+    image_path: str,
+    known_spacing_um: float,
+    axis: str = "horizontal",
+) -> list:
+    """Compute real microns-per-pixel from an image of a periodic
+    calibration reference (e.g. a stage micrometer's ruled markings) -
+    see acquisition.monitoring.pixel_calibration.calibrate_pixel_size for
+    the underlying FFT-based detection method. UNTESTED against a real
+    calibration slide as of 2026-08-21 (none was available) - validated
+    only against a synthetic image with exactly known spacing, which
+    confirmed the detection math itself is correct.
+
+    Deliberately a separate, deterministic tool rather than asking the
+    model to eyeball pixel spacing directly from the image - useful for
+    the model to decide WHICH image/reference to use and what axis/
+    known_spacing_um to pass (it can see the image via get_image()'s
+    embedded preview), but the actual measurement is real signal
+    processing, not a visual guess.
+
+    image_path: path to an already-captured image showing a calibration
+    reference - typically the "image" path from a prior get_image() call.
+
+    known_spacing_um: the real-world distance between adjacent marks on
+    the reference actually in the image - this can't be inferred from
+    the image alone, it has to be known ahead of time (e.g. "10" for a
+    stage micrometer with 10um divisions).
+
+    axis: "horizontal" (marks are vertical lines spaced along X) or
+    "vertical" (marks are horizontal lines spaced along Y) - must match
+    how the ruling is actually oriented in the image.
+
+    Returns [result, overlay_image] - result has um_per_pixel,
+    detected_pixel_spacing, and confidence_ratio (well above ~5-10 means
+    a clear periodic pattern was found; near 1 means it probably wasn't -
+    don't trust a low-confidence result). overlay_image is the detected
+    spacing drawn as red lines over the original, embedded directly in
+    the response so the result can be visually checked against the real
+    markings instead of trusted as a black-box number.
+    """
+    from acquisition.monitoring.pixel_calibration import (
+        calibrate_pixel_size as _calibrate_pixel_size,
+        make_calibration_overlay,
+    )
+
+    result = _calibrate_pixel_size(image_path, known_spacing_um, axis=axis)
+
+    source = Path(image_path)
+    overlay_path = source.with_name(source.stem + "_calibration_overlay.png")
+    make_calibration_overlay(source, result["detected_pixel_spacing"], axis, overlay_path)
+
+    return [result, _make_preview_image(overlay_path)]
+
+
+def get_move_history(limit: int = 50) -> dict:
+    """Return the most recent points move() has actually moved the stage
+    to, oldest-first, each with its requested target, actual resulting
+    position, and timestamps - so "where has this session already been"
+    doesn't need to be remembered/re-derived turn over turn.
+
+    limit: max number of most-recent records to return (default 50) -
+    the log file itself is never truncated, only what's returned here.
+
+    Returns {"history": [...], "returned": N, "total_moves": M} - total_moves
+    lets the caller tell "you're seeing the last 50 of 300" apart from
+    "you're seeing everything there is".
+    """
+    if not MOVE_HISTORY_PATH.exists():
+        return {"history": [], "returned": 0, "total_moves": 0}
+
+    with open(MOVE_HISTORY_PATH, "r") as f:
+        lines = [line for line in f if line.strip()]
+
+    records = [json.loads(line) for line in lines[-limit:]]
+    return {"history": records, "returned": len(records), "total_moves": len(lines)}
